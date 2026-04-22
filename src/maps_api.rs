@@ -295,7 +295,10 @@ async fn get_basemap_tilejson(
         .managed_tilejson()
         .await?
         .ok_or_else(|| AppError::InvalidRequest("No managed basemap is active".to_owned()))?;
-    Ok(Json(absolutize_tilejson(tilejson, &request_base_url(&headers))))
+    Ok(Json(absolutize_tilejson(
+        tilejson,
+        &request_base_url(&headers),
+    )))
 }
 
 async fn get_basemap_tile(
@@ -377,7 +380,9 @@ fn absolutize_style_urls(mut style: serde_json::Value, base_url: &str) -> serde_
                 let absolute = absolute_url(base_url, url);
                 source["url"] = serde_json::Value::String(absolute);
             }
-            if let Some(tiles) = source.get_mut("tiles").and_then(serde_json::Value::as_array_mut)
+            if let Some(tiles) = source
+                .get_mut("tiles")
+                .and_then(serde_json::Value::as_array_mut)
             {
                 for tile in tiles.iter_mut() {
                     if let Some(url) = tile.as_str() {
@@ -391,7 +396,10 @@ fn absolutize_style_urls(mut style: serde_json::Value, base_url: &str) -> serde_
 }
 
 fn absolutize_tilejson(mut tilejson: serde_json::Value, base_url: &str) -> serde_json::Value {
-    if let Some(tiles) = tilejson.get_mut("tiles").and_then(serde_json::Value::as_array_mut) {
+    if let Some(tiles) = tilejson
+        .get_mut("tiles")
+        .and_then(serde_json::Value::as_array_mut)
+    {
         for tile in tiles.iter_mut() {
             if let Some(url) = tile.as_str() {
                 *tile = serde_json::Value::String(absolute_url(base_url, url));

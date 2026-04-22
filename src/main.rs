@@ -17,13 +17,15 @@
 #![deny(clippy::indexing_slicing)]
 #![deny(clippy::unreachable)]
 
-use axum::Router;
+use axum::{Router, middleware};
 use clap::Parser;
-use map_travel::{AppConfig, AppContext, build_router};
+use map_travel::{AppConfig, AppContext, build_router, http_logging::log_http_request};
 use std::{net::SocketAddr, path::PathBuf, process::ExitCode};
 use tokio::net::TcpListener;
 use tower_http::services::{ServeDir, ServeFile};
-use tracing_subscriber::{EnvFilter, filter::LevelFilter, layer::SubscriberExt, util::SubscriberInitExt};
+use tracing_subscriber::{
+    EnvFilter, filter::LevelFilter, layer::SubscriberExt, util::SubscriberInitExt,
+};
 
 #[derive(Parser, Debug)]
 #[command(author, version, about)]
@@ -105,10 +107,12 @@ async fn main() -> Result<ExitCode, ExitCode> {
         eprintln!("Failed to bootstrap application: {error}");
         ExitCode::FAILURE
     })?);
-    let app: Router = build_router(context.clone()).fallback_service(
-        ServeDir::new("frontend/dist")
-            .not_found_service(ServeFile::new("frontend/dist/index.html")),
-    );
+    let app: Router = build_router(context.clone())
+        .fallback_service(
+            ServeDir::new("frontend/dist")
+                .not_found_service(ServeFile::new("frontend/dist/index.html")),
+        )
+        .layer(middleware::from_fn(log_http_request));
     let listener = TcpListener::bind(context.config().listen_addr)
         .await
         .map_err(|error| {
@@ -117,7 +121,12 @@ async fn main() -> Result<ExitCode, ExitCode> {
         })?;
 
     tracing::info!("listening on http://{}", context.config().listen_addr);
-    axum::serve(listener, app).await.map_err(|error| {
+    axum::serve(
+        listener,
+        app.into_make_service_with_connect_info::<SocketAddr>(),
+    )
+    .await
+    .map_err(|error| {
         eprintln!("Server error: {error}");
         ExitCode::FAILURE
     })?;
@@ -126,10 +135,8 @@ async fn main() -> Result<ExitCode, ExitCode> {
 
 fn build_env_filter() -> Result<EnvFilter, tracing_subscriber::filter::ParseError> {
     let hyper_util_directive = "hyper_util=info".parse()?;
-    Ok(
-        EnvFilter::builder()
-            .with_default_directive(LevelFilter::INFO.into())
-            .from_env_lossy()
-            .add_directive(hyper_util_directive),
-    )
+    Ok(EnvFilter::builder()
+        .with_default_directive(LevelFilter::INFO.into())
+        .from_env_lossy()
+        .add_directive(hyper_util_directive))
 }

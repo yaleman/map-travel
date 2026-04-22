@@ -1,8 +1,8 @@
 use std::{
     collections::HashMap,
     path::PathBuf,
-    sync::atomic::{AtomicBool, Ordering},
     sync::Arc,
+    sync::atomic::{AtomicBool, Ordering},
     time::Instant,
 };
 
@@ -30,6 +30,8 @@ const WORLD_TO_6_CHUNK_ID: &str = "world-to-6";
 const MAX_MERCATOR_LAT: f64 = 85.051_129;
 const ACTIVE_JOB_STATUSES: [&str; 3] = ["queued", "running", "cancel_requested"];
 const CANCELLED_STEP: &str = "Cancelled";
+const INTERRUPTED_STEP: &str = "Interrupted";
+const INTERRUPTED_MESSAGE: &str = "Map service restarted before the job completed.";
 
 #[derive(Clone, Debug)]
 pub struct MapsConfig {
@@ -183,13 +185,15 @@ impl MapsService {
             .use_rustls_tls()
             .build()
             .map_err(|error| AppError::Internal(format!("could not build HTTP client: {error}")))?;
-        Ok(Self {
+        let service = Self {
             db,
             config,
             client,
             readers: Arc::new(RwLock::new(HashMap::new())),
             cancel_flags: Arc::new(RwLock::new(HashMap::new())),
-        })
+        };
+        service.reconcile_orphaned_jobs().await?;
+        Ok(service)
     }
 
     pub fn config(&self) -> &MapsConfig {
@@ -228,6 +232,56 @@ impl MapsService {
             selected_build_key,
             builds: builds.into_iter().map(BuildRecord::from).collect(),
         })
+    }
+
+    async fn reconcile_orphaned_jobs(&self) -> AppResult<()> {
+        let jobs = map_job::Entity::find()
+            .filter(map_job::Column::Status.is_in(ACTIVE_JOB_STATUSES))
+            .all(&self.db)
+            .await?;
+        if jobs.is_empty() {
+            return Ok(());
+        }
+
+        let now = Utc::now();
+        for job in jobs {
+            let original_status = job.status.clone();
+            let job_id = job.id.clone();
+            let build_key = job.build_key.clone();
+            let chunk_id = job.chunk_id.clone();
+            let reconciled_status = match original_status.as_str() {
+                "cancel_requested" => "cancelled",
+                "queued" | "running" => "failed",
+                _ => continue,
+            };
+            let mut model: map_job::ActiveModel = job.into();
+            match original_status.as_str() {
+                "cancel_requested" => {
+                    model.status = Set(reconciled_status.to_owned());
+                    model.current_step = Set(CANCELLED_STEP.to_owned());
+                    model.error_message = Set(None);
+                }
+                "queued" | "running" => {
+                    model.status = Set(reconciled_status.to_owned());
+                    model.current_step = Set(INTERRUPTED_STEP.to_owned());
+                    model.error_message = Set(Some(INTERRUPTED_MESSAGE.to_owned()));
+                }
+                _ => continue,
+            }
+            model.finished_at = Set(Some(now));
+            model.updated_at = Set(now);
+            model.update(&self.db).await?;
+            tracing::warn!(
+                job_id = %job_id,
+                original_status = %original_status,
+                reconciled_status = %reconciled_status,
+                build_key = %build_key,
+                chunk_id = ?chunk_id,
+                "reconciled orphaned managed map job after service startup"
+            );
+        }
+
+        Ok(())
     }
 
     pub async fn list_local_maps(&self) -> AppResult<LocalMapsResponse> {
@@ -271,7 +325,9 @@ impl MapsService {
                 let archives = archives_by_chunk.remove(&chunk.id).unwrap_or_default();
                 let has_any_archive = !archives.is_empty();
                 let selected_build_ready = selected_build_key.as_ref().is_some_and(|build_key| {
-                    archives.iter().any(|archive| archive.build_key == *build_key)
+                    archives
+                        .iter()
+                        .any(|archive| archive.build_key == *build_key)
                 });
                 let stale = selected_build_key.as_ref().is_some_and(|build_key| {
                     has_any_archive
@@ -317,7 +373,8 @@ impl MapsService {
     pub async fn queue_world_to_6(&self, build_key: &str) -> AppResult<EnqueuedJobResponse> {
         let chunk = self.ensure_world_chunk().await?;
         self.ensure_selected_build_key(build_key).await?;
-        self.ensure_chunk_ready_for_enqueue(build_key, &chunk.id).await?;
+        self.ensure_chunk_ready_for_enqueue(build_key, &chunk.id)
+            .await?;
         let job = self
             .enqueue_job("world-to-6", build_key, Some(chunk.id.clone()))
             .await?;
@@ -364,7 +421,8 @@ impl MapsService {
             .insert(&self.db)
             .await?
         };
-        self.ensure_chunk_ready_for_enqueue(build_key, &chunk.id).await?;
+        self.ensure_chunk_ready_for_enqueue(build_key, &chunk.id)
+            .await?;
         let job = self
             .enqueue_job("area-extract", build_key, Some(chunk.id.clone()))
             .await?;
@@ -419,9 +477,7 @@ impl MapsService {
         let chunks = query.all(&self.db).await?;
         let mut job_ids = Vec::new();
         for chunk in chunks {
-            if self
-                .archive_exists_for_chunk(build_key, &chunk.id)
-                .await?
+            if self.archive_exists_for_chunk(build_key, &chunk.id).await?
                 || self
                     .find_active_job_for_chunk(build_key, &chunk.id)
                     .await?
@@ -443,7 +499,9 @@ impl MapsService {
             .one(&self.db)
             .await?
         else {
-            return Err(AppError::InvalidRequest("map job does not exist".to_owned()));
+            return Err(AppError::InvalidRequest(
+                "map job does not exist".to_owned(),
+            ));
         };
         let was_queued = job.status == "queued";
 
@@ -828,14 +886,8 @@ impl MapsService {
             output_path = %relative_path,
             "computed managed map extract plan"
         );
-        self.update_job_progress(
-            &job.id,
-            "Downloading tiles",
-            5,
-            0,
-            segments_total,
-        )
-        .await?;
+        self.update_job_progress(&job.id, "Downloading tiles", 5, 0, segments_total)
+            .await?;
         let mut tiles = Vec::new();
         let mut found_any_tiles = false;
         let total_coords = coords.len();
@@ -1232,7 +1284,8 @@ impl MapsService {
 
     async fn cancel_flag(&self, job_id: &str) -> Arc<AtomicBool> {
         let mut flags = self.cancel_flags.write().await;
-        flags.entry(job_id.to_owned())
+        flags
+            .entry(job_id.to_owned())
             .or_insert_with(|| Arc::new(AtomicBool::new(false)))
             .clone()
     }

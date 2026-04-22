@@ -21,6 +21,7 @@ mod api;
 mod app;
 mod entities;
 mod error;
+pub mod http_logging;
 mod maps;
 mod maps_api;
 

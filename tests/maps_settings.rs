@@ -10,8 +10,10 @@ use axum::{
     },
     routing::get,
 };
+use chrono::Utc;
 use http_body_util::BodyExt;
 use pmtiles::{PmTilesWriter, TileCoord, TileType};
+use sea_orm::ConnectionTrait;
 use serde_json::{Value, json};
 use tempfile::TempDir;
 use tokio::{net::TcpListener, sync::oneshot};
@@ -243,10 +245,12 @@ async fn wait_for_all_jobs(router: &Router) {
             .expect("jobs request should succeed");
         let payload = json_response(response).await;
         let jobs = payload["jobs"].as_array().expect("jobs should be an array");
-        if jobs
-            .iter()
-            .all(|job| matches!(job["status"].as_str(), Some("completed" | "failed" | "cancelled")))
-        {
+        if jobs.iter().all(|job| {
+            matches!(
+                job["status"].as_str(),
+                Some("completed" | "failed" | "cancelled")
+            )
+        }) {
             return;
         }
         tokio::time::sleep(std::time::Duration::from_millis(25)).await;
@@ -705,7 +709,9 @@ async fn cancels_running_world_job_and_rejects_duplicate_world_requests() {
         .await
         .expect("jobs request should succeed");
     let jobs_payload = json_response(jobs_response).await;
-    let jobs = jobs_payload["jobs"].as_array().expect("jobs should be an array");
+    let jobs = jobs_payload["jobs"]
+        .as_array()
+        .expect("jobs should be an array");
     assert_eq!(jobs.len(), 1);
     let cancelled_job = jobs
         .iter()
@@ -735,17 +741,87 @@ async fn cancels_running_world_job_and_rejects_duplicate_world_requests() {
 }
 
 #[tokio::test]
+async fn reconciles_cancel_requested_jobs_after_restart() {
+    let temp_dir = TempDir::new().expect("temp dir should be created");
+    let build_path = temp_dir.path().join("20260421.pmtiles");
+    let build_bytes = create_source_pmtiles(&build_path, b"region-a", b"coarse-a");
+
+    let (base_url, shutdown_tx, handle) = spawn_mock_server(vec![MockBuild {
+        key: "20260421.pmtiles".to_owned(),
+        bytes: Arc::new(build_bytes),
+    }])
+    .await;
+
+    let config = app_config(&temp_dir, &base_url);
+    let initial_context = AppContext::bootstrap(config.clone())
+        .await
+        .expect("bootstrap should succeed");
+    let now = Utc::now().to_rfc3339();
+    let insert_sql = format!(
+        "INSERT INTO map_jobs \
+         (id, kind, status, build_key, chunk_id, archive_id, error_message, current_step, progress_percent, segments_done, segments_total, created_at, updated_at, started_at, finished_at) \
+         VALUES \
+         ('orphaned-cancel-request', 'world-to-6', 'cancel_requested', '20260421.pmtiles', 'world-to-6', NULL, NULL, 'Cancellation requested', 7, 150, 5461, '{now}', '{now}', '{now}', NULL)"
+    );
+    initial_context
+        .db()
+        .execute_unprepared(&insert_sql)
+        .await
+        .expect("job insert should succeed");
+    drop(initial_context);
+
+    let restarted_context = Arc::new(
+        AppContext::bootstrap(config)
+            .await
+            .expect("restart bootstrap should succeed"),
+    );
+    let router = build_router(restarted_context);
+
+    let jobs_response = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/api/settings/maps/jobs")
+                .body(Body::empty())
+                .expect("jobs request should build"),
+        )
+        .await
+        .expect("jobs request should succeed");
+    let jobs_payload = json_response(jobs_response).await;
+    let jobs = jobs_payload["jobs"]
+        .as_array()
+        .expect("jobs should be an array");
+    let reconciled_job = jobs
+        .iter()
+        .find(|job| job["id"].as_str() == Some("orphaned-cancel-request"))
+        .expect("reconciled job should exist");
+    assert_eq!(reconciled_job["status"].as_str(), Some("cancelled"));
+    assert_eq!(reconciled_job["current_step"].as_str(), Some("Cancelled"));
+
+    let world_response = post_json(
+        &router,
+        "/api/settings/maps/world-to-6",
+        json!({ "build_key": "20260421.pmtiles" }),
+    )
+    .await;
+    assert_eq!(world_response.status(), StatusCode::CREATED);
+
+    wait_for_all_jobs(&router).await;
+
+    shutdown_tx.send(()).expect("mock server should shut down");
+    handle.await.expect("mock server task should finish");
+}
+
+#[tokio::test]
 async fn rejects_duplicate_area_extract_jobs_without_creating_extra_chunks() {
     let temp_dir = TempDir::new().expect("temp dir should be created");
     let build_path = temp_dir.path().join("20260421.pmtiles");
     let build_bytes = create_source_pmtiles(&build_path, b"region-a", b"coarse-a");
 
-    let (base_url, shutdown_tx, handle) = spawn_mock_server(
-        vec![MockBuild {
-            key: "20260421.pmtiles".to_owned(),
-            bytes: Arc::new(build_bytes),
-        }],
-    )
+    let (base_url, shutdown_tx, handle) = spawn_mock_server(vec![MockBuild {
+        key: "20260421.pmtiles".to_owned(),
+        bytes: Arc::new(build_bytes),
+    }])
     .await;
 
     let context = Arc::new(
@@ -766,11 +842,20 @@ async fn rejects_duplicate_area_extract_jobs_without_creating_extra_chunks() {
         "max_zoom": 2
     });
 
-    let first_response = post_json(&router, "/api/settings/maps/area-extract", request_body.clone()).await;
+    let first_response = post_json(
+        &router,
+        "/api/settings/maps/area-extract",
+        request_body.clone(),
+    )
+    .await;
     assert_eq!(first_response.status(), StatusCode::CREATED);
 
-    let duplicate_while_running =
-        post_json(&router, "/api/settings/maps/area-extract", request_body.clone()).await;
+    let duplicate_while_running = post_json(
+        &router,
+        "/api/settings/maps/area-extract",
+        request_body.clone(),
+    )
+    .await;
     assert_eq!(duplicate_while_running.status(), StatusCode::CONFLICT);
 
     let local_during_download = router

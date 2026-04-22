@@ -158,6 +158,11 @@ interface AreaSelectionState {
 	end: { lng: number; lat: number } | null;
 }
 
+interface AreaExtractFormState {
+	label: string;
+	maxZoom: string;
+}
+
 const app = document.querySelector<HTMLDivElement>("#app");
 
 if (!app) {
@@ -358,6 +363,10 @@ let addPlaceMode = false;
 let pendingPlace: PendingPlaceState | null = null;
 let areaSelectionMode = false;
 let areaSelection: AreaSelectionState = { start: null, end: null };
+let areaExtractForm: AreaExtractFormState = {
+	label: "Regional detail",
+	maxZoom: "8",
+};
 let currentView: ViewMode = getViewFromLocation();
 let settingsRefreshTimer: number | null = null;
 
@@ -707,6 +716,7 @@ function ensureSettingsMapLayers(): void {
 			id: "selection-fill",
 			type: "fill",
 			source: "selection-box",
+			filter: ["==", "$type", "Polygon"],
 			paint: {
 				"fill-color": "#2e7764",
 				"fill-opacity": 0.12,
@@ -719,10 +729,26 @@ function ensureSettingsMapLayers(): void {
 			id: "selection-outline",
 			type: "line",
 			source: "selection-box",
+			filter: ["==", "$type", "Polygon"],
 			paint: {
 				"line-color": "#2e7764",
 				"line-width": 2,
 				"line-dasharray": [2, 2],
+			},
+		});
+	}
+
+	if (!settingsMap.getLayer("selection-point")) {
+		settingsMap.addLayer({
+			id: "selection-point",
+			type: "circle",
+			source: "selection-box",
+			filter: ["==", "$type", "Point"],
+			paint: {
+				"circle-radius": 6,
+				"circle-color": "#2e7764",
+				"circle-stroke-width": 2,
+				"circle-stroke-color": "#fcfbf8",
 			},
 		});
 	}
@@ -986,18 +1012,18 @@ function renderSettings(): void {
       <div class="field-grid">
         <label>
           Label
-          <input id="area-label" type="text" placeholder="Brisbane detail" value="Regional detail" />
+          <input id="area-label" type="text" placeholder="Brisbane detail" value="${escapeHtml(areaExtractForm.label)}" />
         </label>
         <label>
           Max zoom
-          <input id="area-max-zoom" type="number" min="0" max="12" value="8" />
+          <input id="area-max-zoom" type="number" min="0" max="12" value="${escapeHtml(areaExtractForm.maxZoom)}" />
         </label>
         <div class="inline-actions">
           <button id="select-area" class="secondary" type="button">${areaSelectionMode ? "Area mode on" : "Select area"}</button>
           <button id="clear-area" class="secondary" type="button" ${!areaSelection.start ? "disabled" : ""}>Clear</button>
           <button id="create-area-extract" type="button" ${!hasCompleteAreaSelection() || !settingsState.selectedBuildKey ? "disabled" : ""}>Create extract</button>
         </div>
-        <div class="status">
+        <div id="area-selection-status" class="status">
           ${describeAreaSelection()}
         </div>
       </div>
@@ -1049,6 +1075,10 @@ function wireSettingsPanel(): void {
 		settingsContent.querySelector<HTMLButtonElement>("#clear-area");
 	const createAreaExtractButton =
 		settingsContent.querySelector<HTMLButtonElement>("#create-area-extract");
+	const areaLabelInput =
+		settingsContent.querySelector<HTMLInputElement>("#area-label");
+	const areaMaxZoomInput =
+		settingsContent.querySelector<HTMLInputElement>("#area-max-zoom");
 	const activeLayersForm = settingsContent.querySelector<HTMLFormElement>(
 		"#active-layers-form",
 	);
@@ -1063,6 +1093,14 @@ function wireSettingsPanel(): void {
 
 	refreshBuildsButton?.addEventListener("click", async () => {
 		await refreshSettingsData();
+	});
+
+	areaLabelInput?.addEventListener("input", () => {
+		areaExtractForm.label = areaLabelInput.value;
+	});
+
+	areaMaxZoomInput?.addEventListener("input", () => {
+		areaExtractForm.maxZoom = areaMaxZoomInput.value;
 	});
 
 	worldTo6Button?.addEventListener("click", async () => {
@@ -1088,34 +1126,30 @@ function wireSettingsPanel(): void {
 	selectAreaButton?.addEventListener("click", () => {
 		areaSelectionMode = !areaSelectionMode;
 		updateSettingsMapDetail();
-		renderSettings();
+		syncAreaExtractUi();
 	});
 
 	clearAreaButton?.addEventListener("click", () => {
 		areaSelectionMode = false;
 		clearAreaSelection();
 		updateSettingsMapDetail();
-		renderSettings();
+		syncAreaExtractUi();
 	});
 
 	createAreaExtractButton?.addEventListener("click", async () => {
 		if (!settingsState.selectedBuildKey || !hasCompleteAreaSelection()) return;
-		const labelInput =
-			settingsContent.querySelector<HTMLInputElement>("#area-label");
-		const maxZoomInput =
-			settingsContent.querySelector<HTMLInputElement>("#area-max-zoom");
 		const bounds = normalizedAreaBounds();
 		if (!bounds) return;
 
 		await runManagedMapsAction(async () => {
 			await postJson("/api/settings/maps/area-extract", {
 				build_key: settingsState.selectedBuildKey,
-				label: labelInput?.value.trim() || "Regional detail",
+				label: areaExtractForm.label.trim() || "Regional detail",
 				min_lon: bounds.minLon,
 				min_lat: bounds.minLat,
 				max_lon: bounds.maxLon,
 				max_lat: bounds.maxLat,
-				max_zoom: Number(maxZoomInput?.value || "8"),
+				max_zoom: Number(areaExtractForm.maxZoom || "8"),
 			});
 			await waitForMapJobs();
 			areaSelectionMode = false;
@@ -1166,6 +1200,37 @@ function wireSettingsPanel(): void {
 	}
 }
 
+function syncAreaExtractUi(): void {
+	const selectAreaButton =
+		settingsContent.querySelector<HTMLButtonElement>("#select-area");
+	const clearAreaButton =
+		settingsContent.querySelector<HTMLButtonElement>("#clear-area");
+	const createAreaExtractButton =
+		settingsContent.querySelector<HTMLButtonElement>("#create-area-extract");
+	const areaSelectionStatus =
+		settingsContent.querySelector<HTMLDivElement>("#area-selection-status");
+
+	if (selectAreaButton) {
+		selectAreaButton.textContent = areaSelectionMode
+			? "Area mode on"
+			: "Select area";
+		selectAreaButton.classList.toggle("active", areaSelectionMode);
+	}
+
+	if (clearAreaButton) {
+		clearAreaButton.disabled = !areaSelection.start;
+	}
+
+	if (createAreaExtractButton) {
+		createAreaExtractButton.disabled =
+			!hasCompleteAreaSelection() || !settingsState.selectedBuildKey;
+	}
+
+	if (areaSelectionStatus) {
+		areaSelectionStatus.textContent = describeAreaSelection();
+	}
+}
+
 async function runManagedMapsAction(
 	action: () => Promise<void>,
 ): Promise<void> {
@@ -1200,7 +1265,7 @@ function handleAreaSelectionClick(lng: number, lat: number): void {
 	}
 	updateSelectionSource();
 	updateSettingsMapDetail();
-	renderSettings();
+	syncAreaExtractUi();
 }
 
 function updateSelectionSource(): void {
@@ -1214,6 +1279,22 @@ function updateSelectionSource(): void {
 }
 
 function buildSelectionFeatureCollection(): GeoJSON.FeatureCollection {
+	if (areaSelection.start && !areaSelection.end) {
+		return {
+			type: "FeatureCollection",
+			features: [
+				{
+					type: "Feature",
+					properties: {},
+					geometry: {
+						type: "Point",
+						coordinates: [areaSelection.start.lng, areaSelection.start.lat],
+					},
+				},
+			],
+		};
+	}
+
 	const bounds = normalizedAreaBounds();
 	if (!bounds) {
 		return emptyFeatureCollection();
