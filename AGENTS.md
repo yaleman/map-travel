@@ -17,6 +17,7 @@
 - `tests/` contains integration tests that exercise the HTTP surface and startup behavior.
 
 The server serves `frontend/dist/`, so frontend changes normally need a fresh `pnpm --dir frontend build` before running `cargo run`.
+That frontend build also vendors the basemap style, sprite, and font assets into `vendor/protomaps/`.
 
 ## Database Rules
 
@@ -31,7 +32,8 @@ The server serves `frontend/dist/`, so frontend changes normally need a fresh `p
 - PMTiles is a required part of the mapping stack.
 - Keep PMTiles handling in the Rust server unless there is a strong reason not to.
 - Map rendering in the browser should continue to use MapLibre GL JS unless the repo is explicitly being reworked.
-- If working on vector PMTiles support, keep style handling explicit through `MAP_TRAVEL_PMTILES_STYLE_PATH` or an equivalent checked-in mechanism.
+- Managed vector PMTiles basemaps should read from the vendored asset bundle in `vendor/protomaps/`, not from runtime network fetches.
+- If working on vector PMTiles support, keep the browser fully local: sprite and glyph URLs must stay inside the app.
 
 ## Backend Conventions
 

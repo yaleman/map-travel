@@ -13,6 +13,10 @@ import {
 	writeViewportFragment,
 } from "./viewport-fragment";
 import { sortViewportObjectsByDistance } from "./viewport-objects";
+import {
+	readWorkspaceSidebarCollapsed,
+	writeWorkspaceSidebarCollapsed,
+} from "./workspace-sidebar";
 import "./styles.css";
 
 type CollectionKind = "trip" | "future" | "past" | "general";
@@ -178,11 +182,13 @@ interface SelectedMapObjectState {
 }
 
 const workspaceScreen = must<HTMLElement>("#workspace-screen");
+const workspaceShell = must<HTMLElement>("#workspace-shell");
+const workspaceSidebar = must<HTMLElement>("#workspace-sidebar");
+const workspaceSidebarContent = must<HTMLElement>("#workspace-sidebar-content");
 const settingsScreen = must<HTMLElement>("#settings-screen");
 const detailPanel = must<HTMLDivElement>("#detail-panel");
 const importForm = must<HTMLFormElement>("#import-form");
 const gpxFileInput = must<HTMLInputElement>("#gpx-file");
-const basemapStatus = must<HTMLDivElement>("#basemap-status");
 const collectionForm = must<HTMLFormElement>("#collection-form");
 const collectionNameInput = must<HTMLInputElement>("#collection-name");
 const collectionKindSelect = must<HTMLSelectElement>("#collection-kind");
@@ -194,6 +200,8 @@ const filterStartsAfter = must<HTMLInputElement>("#filter-starts-after");
 const filterEndsBefore = must<HTMLInputElement>("#filter-ends-before");
 const toggleAddPlaceButton = must<HTMLButtonElement>("#toggle-add-place");
 const refreshMapButton = must<HTMLButtonElement>("#refresh-map");
+const toggleSidebarButton = must<HTMLButtonElement>("#toggle-sidebar");
+const expandSidebarButton = must<HTMLButtonElement>("#expand-sidebar");
 const openSettingsButton = must<HTMLButtonElement>("#open-settings");
 const closeSettingsButton = must<HTMLButtonElement>("#close-settings");
 const openGoogleMapsLink = must<HTMLAnchorElement>("#open-google-maps");
@@ -229,6 +237,7 @@ let areaExtractForm: AreaExtractFormState = {
 let selectedMapObject: SelectedMapObjectState | null = null;
 const hiddenTrackIds = new Set<string>();
 let currentView: ViewMode = getViewFromLocation();
+let workspaceSidebarCollapsed = readWorkspaceSidebarCollapsed();
 let settingsRefreshTimer: number | null = null;
 const scheduleViewportFragmentUpdate = createDebouncedViewportFragmentUpdater(
 	writeViewportFragment,
@@ -251,6 +260,7 @@ const filters: FiltersState = {
 	endsBefore: "",
 };
 
+applyWorkspaceSidebarState();
 void bootstrap();
 
 async function bootstrap(): Promise<void> {
@@ -319,6 +329,35 @@ function updateGoogleMapsLink(state: {
 	openGoogleMapsLink.href = googleMapsViewportUrl(state);
 }
 
+function applyWorkspaceSidebarState(): void {
+	workspaceShell.classList.toggle("sidebar-collapsed", workspaceSidebarCollapsed);
+	workspaceSidebar.classList.toggle(
+		"workspace-sidebar-collapsed",
+		workspaceSidebarCollapsed,
+	);
+	workspaceSidebarContent.toggleAttribute("hidden", workspaceSidebarCollapsed);
+	toggleSidebarButton.setAttribute(
+		"aria-expanded",
+		String(!workspaceSidebarCollapsed),
+	);
+	expandSidebarButton.setAttribute(
+		"aria-expanded",
+		String(!workspaceSidebarCollapsed),
+	);
+}
+
+function setWorkspaceSidebarCollapsed(collapsed: boolean): void {
+	if (workspaceSidebarCollapsed === collapsed) {
+		return;
+	}
+	workspaceSidebarCollapsed = collapsed;
+	writeWorkspaceSidebarCollapsed(workspaceSidebarCollapsed);
+	applyWorkspaceSidebarState();
+	if (currentView === "workspace") {
+		workspaceMap?.resize();
+	}
+}
+
 function wireEventHandlers(): void {
 	importForm.addEventListener("submit", async (event) => {
 		event.preventDefault();
@@ -383,6 +422,14 @@ function wireEventHandlers(): void {
 
 	refreshMapButton.addEventListener("click", async () => {
 		await refreshMapData();
+	});
+
+	toggleSidebarButton.addEventListener("click", () => {
+		setWorkspaceSidebarCollapsed(true);
+	});
+
+	expandSidebarButton.addEventListener("click", () => {
+		setWorkspaceSidebarCollapsed(false);
 	});
 
 	openSettingsButton.addEventListener("click", async () => {
@@ -1845,21 +1892,8 @@ function emptyFeatureCollection(): GeoJSON.FeatureCollection {
 	};
 }
 
-function buildBasemapLabel(basemap: BasemapConfig): string {
-	if (!basemap.enabled) {
-		return "No basemap configured";
-	}
-	const tileType = basemap.tile_type
-		? basemap.tile_type.toUpperCase()
-		: "PMTiles";
-	return `PMTiles ${tileType} · z${basemap.min_zoom ?? 0}-${basemap.max_zoom ?? 0}`;
-}
-
 async function applyBasemapConfig(): Promise<BasemapConfig> {
-	const basemap = await fetchJson<BasemapConfig>("/api/basemap");
-	basemapStatus.className = basemap.message ? "status warn" : "status";
-	basemapStatus.textContent = basemap.message ?? buildBasemapLabel(basemap);
-	return basemap;
+	return fetchJson<BasemapConfig>("/api/basemap");
 }
 
 async function refreshBasemapStyle(): Promise<void> {

@@ -32,13 +32,15 @@ const ACTIVE_JOB_STATUSES: [&str; 3] = ["queued", "running", "cancel_requested"]
 const CANCELLED_STEP: &str = "Cancelled";
 const INTERRUPTED_STEP: &str = "Interrupted";
 const INTERRUPTED_MESSAGE: &str = "Map service restarted before the job completed.";
+const LOCAL_MANAGED_SPRITE_PATH: &str = "/api/basemap/sprite";
+const LOCAL_MANAGED_GLYPHS_PATH: &str = "/api/basemap/fonts/{fontstack}/{range}.pbf";
 
 #[derive(Clone, Debug)]
 pub struct MapsConfig {
     pub managed_maps_dir: PathBuf,
+    pub vendored_basemap_dir: PathBuf,
     pub protomaps_builds_metadata_url: String,
     pub protomaps_builds_base_url: String,
-    pub protomaps_style_base_url: String,
 }
 
 #[derive(Clone)]
@@ -626,50 +628,36 @@ impl MapsService {
                 })))
             }
             TileType::Mvt | TileType::Mlt => {
-                let build_key = self.selected_build_key().await?.ok_or_else(|| {
-                    AppError::InvalidRequest("No selected build configured".to_owned())
-                })?;
-                let build_id = build_key.trim_end_matches(".pmtiles");
-                let separator = if self.config.protomaps_style_base_url.contains('?') {
-                    '&'
-                } else {
-                    '?'
-                };
-                let style_url = format!(
-                    "{}{separator}version=5.0.0&theme=light&tiles={build_id}&lang=en",
-                    self.config.protomaps_style_base_url
-                );
-                let style = self
-                    .client
-                    .get(style_url)
-                    .send()
-                    .await
-                    .map_err(|error| {
-                        AppError::InvalidRequest(format!(
-                            "could not fetch Protomaps style JSON: {error}"
-                        ))
-                    })?
-                    .error_for_status()
-                    .map_err(|error| {
-                        AppError::InvalidRequest(format!(
-                            "could not fetch Protomaps style JSON: {error}"
-                        ))
-                    })?
-                    .text()
-                    .await
-                    .map_err(|error| {
-                        AppError::Internal(format!(
-                            "could not read Protomaps style JSON response: {error}"
-                        ))
-                    })?;
-                let style = serde_json::from_str::<serde_json::Value>(&style).map_err(|error| {
-                    AppError::Internal(format!("could not parse Protomaps style JSON: {error}"))
-                })?;
-
+                let style = self.load_vendored_vector_style().await?;
                 Ok(Some(rewrite_style_sources(style)))
             }
             TileType::Unknown => Ok(None),
         }
+    }
+
+    pub async fn managed_font_bytes(
+        &self,
+        fontstack: &str,
+        range: &str,
+    ) -> AppResult<Option<Bytes>> {
+        if !self.has_active_vector_basemap().await? {
+            return Ok(None);
+        }
+        let path = self
+            .config
+            .vendored_basemap_dir
+            .join("fonts")
+            .join(fontstack)
+            .join(format!("{range}.pbf"));
+        read_optional_file(path).await
+    }
+
+    pub async fn managed_sprite_json(&self, hidpi: bool) -> AppResult<Option<Bytes>> {
+        self.managed_sprite_asset(hidpi, "json").await
+    }
+
+    pub async fn managed_sprite_png(&self, hidpi: bool) -> AppResult<Option<Bytes>> {
+        self.managed_sprite_asset(hidpi, "png").await
     }
 
     pub async fn managed_tilejson(&self) -> AppResult<Option<serde_json::Value>> {
@@ -1395,6 +1383,44 @@ impl MapsService {
         readers.insert(archive.id.clone(), reader.clone());
         Ok(reader)
     }
+
+    async fn managed_sprite_asset(&self, hidpi: bool, extension: &str) -> AppResult<Option<Bytes>> {
+        if !self.has_active_vector_basemap().await? {
+            return Ok(None);
+        }
+        let filename = if hidpi {
+            format!("sprite@2x.{extension}")
+        } else {
+            format!("sprite.{extension}")
+        };
+        let path = self.config.vendored_basemap_dir.join(filename);
+        read_optional_file(path).await
+    }
+
+    async fn has_active_vector_basemap(&self) -> AppResult<bool> {
+        let layers = self.active_layers_for_selected_build().await?;
+        if layers.is_empty() {
+            return Ok(false);
+        }
+        let first_reader = self.reader_for_archive(&layers[0].archive).await?;
+        let header = first_reader.get_header();
+        Ok(matches!(header.tile_type, TileType::Mvt | TileType::Mlt))
+    }
+
+    async fn load_vendored_vector_style(&self) -> AppResult<serde_json::Value> {
+        let path = self.config.vendored_basemap_dir.join("style.json");
+        let bytes = tokio::fs::read(&path).await.map_err(|error| {
+            AppError::InvalidRequest(format!(
+                "could not read vendored basemap style from {}: {error}",
+                path.display()
+            ))
+        })?;
+        serde_json::from_slice::<serde_json::Value>(&bytes).map_err(|error| {
+            AppError::Internal(format!(
+                "could not parse vendored basemap style JSON: {error}"
+            ))
+        })
+    }
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -1405,6 +1431,12 @@ pub struct ActiveLayerUpdate {
 }
 
 fn rewrite_style_sources(mut style: serde_json::Value) -> serde_json::Value {
+    if style.get("sprite").is_some() {
+        style["sprite"] = serde_json::Value::String(LOCAL_MANAGED_SPRITE_PATH.to_owned());
+    }
+    if style.get("glyphs").is_some() {
+        style["glyphs"] = serde_json::Value::String(LOCAL_MANAGED_GLYPHS_PATH.to_owned());
+    }
     if let Some(sources) = style
         .get_mut("sources")
         .and_then(serde_json::Value::as_object_mut)
@@ -1446,6 +1478,17 @@ fn bounds_for_chunk(chunk: &map_chunk::Model) -> (f64, f64, f64, f64) {
             chunk.max_lon.unwrap_or(180.0),
             chunk.max_lat.unwrap_or(MAX_MERCATOR_LAT),
         )
+    }
+}
+
+async fn read_optional_file(path: PathBuf) -> AppResult<Option<Bytes>> {
+    match tokio::fs::read(&path).await {
+        Ok(bytes) => Ok(Some(Bytes::from(bytes))),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(AppError::Internal(format!(
+            "could not read vendored basemap asset {}: {error}",
+            path.display()
+        ))),
     }
 }
 

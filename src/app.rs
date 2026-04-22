@@ -20,10 +20,10 @@ pub struct AppConfig {
     pub listen_addr: SocketAddr,
     pub pmtiles_path: Option<PathBuf>,
     pub pmtiles_style_path: Option<PathBuf>,
+    pub vendored_basemap_dir: PathBuf,
     pub managed_maps_dir: Option<PathBuf>,
     pub protomaps_builds_metadata_url: String,
     pub protomaps_builds_base_url: String,
-    pub protomaps_style_base_url: String,
 }
 
 impl AppConfig {
@@ -36,11 +36,11 @@ impl AppConfig {
                 .expect("test listen address should parse"),
             pmtiles_path: None,
             pmtiles_style_path: None,
+            vendored_basemap_dir: PathBuf::from("vendor/protomaps"),
             managed_maps_dir: Some(std::env::temp_dir().join("map-travel-managed-maps-tests")),
             protomaps_builds_metadata_url: "https://build-metadata.protomaps.dev/builds.json"
                 .to_owned(),
             protomaps_builds_base_url: "https://build.protomaps.com".to_owned(),
-            protomaps_style_base_url: "https://npm-style.protomaps.dev/style.json".to_owned(),
         }
     }
 }
@@ -80,9 +80,9 @@ impl AppContext {
                 db.clone(),
                 MapsConfig {
                     managed_maps_dir,
+                    vendored_basemap_dir: config.vendored_basemap_dir.clone(),
                     protomaps_builds_metadata_url: config.protomaps_builds_metadata_url.clone(),
                     protomaps_builds_base_url: config.protomaps_builds_base_url.clone(),
-                    protomaps_style_base_url: config.protomaps_style_base_url.clone(),
                 },
             )
             .await?,

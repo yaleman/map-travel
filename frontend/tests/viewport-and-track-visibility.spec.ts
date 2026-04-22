@@ -116,3 +116,37 @@ test("restores the viewport from the fragment on reload", async ({
 
 	await expect(page.locator("#detail-panel")).toContainText("Sydney Harbour");
 });
+
+test("simplifies the workspace sidebar and persists collapsed state", async ({
+	page,
+}) => {
+	await page.goto("/");
+
+	const sidebar = page.locator("#workspace-sidebar");
+	const sidebarContent = page.locator("#workspace-sidebar-content");
+	const sections = sidebarContent.locator(".section");
+
+	await expect(sidebar).not.toContainText("v1");
+	await expect(sidebar).not.toContainText("Basemap");
+	await expect(page.locator(".brand h1")).toContainText("Map Travel");
+	await expect(sections.nth(0)).toContainText("Add place");
+	await expect(sections.nth(0)).toContainText("Refresh");
+	await expect(sections.nth(1)).toContainText("GPX file");
+
+	await page.getByRole("button", { name: "Collapse sidebar" }).click();
+	await expect(page.locator("#workspace-shell")).toHaveClass(/sidebar-collapsed/);
+	await expect(sidebarContent).toBeHidden();
+	await expect(
+		page.getByRole("button", { name: "Expand sidebar" }),
+	).toBeVisible();
+
+	await page.reload();
+	await expect(page.locator("#workspace-shell")).toHaveClass(/sidebar-collapsed/);
+	await expect(sidebarContent).toBeHidden();
+
+	await page.getByRole("button", { name: "Expand sidebar" }).click();
+	await expect(page.locator("#workspace-shell")).not.toHaveClass(
+		/sidebar-collapsed/,
+	);
+	await expect(sidebarContent).toBeVisible();
+});

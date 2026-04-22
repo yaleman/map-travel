@@ -11,19 +11,34 @@
   </head>
   <body>
     <section id="workspace-screen" class="app-screen">
-      <div class="shell">
-        <aside class="panel">
-          <div class="panel-scroll">
+      <div id="workspace-shell" class="shell">
+        <aside id="workspace-sidebar" class="panel workspace-sidebar">
+          <div class="workspace-sidebar-rail">
+            <button
+              id="expand-sidebar"
+              class="secondary sidebar-toggle workspace-sidebar-expand"
+              type="button"
+              aria-label="Expand sidebar"
+            >
+              ›
+            </button>
+          </div>
+          <div id="workspace-sidebar-content" class="panel-scroll workspace-sidebar-content">
             <div class="brand">
               <div class="brand-title">
                 <h1>Map Travel</h1>
-                <span class="pill">v1</span>
               </div>
               <button id="open-settings" class="secondary" type="button">Settings</button>
             </div>
 
             <section class="section">
-              <h2>Tracks</h2>
+              <div class="inline-actions workspace-top-actions">
+                <button id="toggle-add-place" class="secondary" type="button">Add place</button>
+                <button id="refresh-map" class="secondary" type="button">Refresh</button>
+              </div>
+            </section>
+
+            <section class="section">
               <form id="import-form" class="field-grid">
                 <label>
                   GPX file
@@ -37,11 +52,6 @@
                 </label>
                 <button type="submit">Import GPX</button>
               </form>
-            </section>
-
-            <section class="section">
-              <h2>Basemap</h2>
-              <div id="basemap-status" class="status">Checking PMTiles…</div>
             </section>
 
             <section class="section">
@@ -103,15 +113,15 @@
               </form>
               <div id="collection-list" class="collection-list section-space"></div>
             </section>
-
-            <section class="section">
-              <h2>Places</h2>
-              <div class="inline-actions">
-                <button id="toggle-add-place" class="secondary" type="button">Add place</button>
-                <button id="refresh-map" class="secondary" type="button">Refresh</button>
-              </div>
-            </section>
           </div>
+          <button
+            id="toggle-sidebar"
+            class="secondary sidebar-toggle workspace-sidebar-collapse"
+            type="button"
+            aria-label="Collapse sidebar"
+          >
+            ‹
+          </button>
         </aside>
 
         <main class="panel map-panel">

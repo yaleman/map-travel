@@ -126,6 +126,13 @@ async fn spawn_mock_server_with_delay(
         .into_iter()
         .map(|build| (build.key, build.bytes))
         .collect::<HashMap<_, _>>();
+    let listener = TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("listener should bind");
+    let addr = listener
+        .local_addr()
+        .expect("listener should have local addr");
+    let base_url = format!("http://{addr}");
     let state = Arc::new(MockServerState {
         builds_json,
         files: Arc::new(files),
@@ -135,13 +142,6 @@ async fn spawn_mock_server_with_delay(
         .route("/builds.json", get(builds_handler))
         .route("/{key}", get(pmtiles_handler))
         .with_state(state);
-
-    let listener = TcpListener::bind("127.0.0.1:0")
-        .await
-        .expect("listener should bind");
-    let addr = listener
-        .local_addr()
-        .expect("listener should have local addr");
     let (shutdown_tx, shutdown_rx) = oneshot::channel();
     let handle = tokio::spawn(async move {
         axum::serve(listener, router)
@@ -152,7 +152,7 @@ async fn spawn_mock_server_with_delay(
             .expect("mock server should run");
     });
 
-    (format!("http://{addr}"), shutdown_tx, handle)
+    (base_url, shutdown_tx, handle)
 }
 
 fn tile_bounds(z: u8, x: u32, y: u32) -> (f64, f64, f64, f64) {
@@ -184,7 +184,7 @@ fn build_inner_bbox(z: u8, x: u32, y: u32) -> (f64, f64, f64, f64) {
 
 fn create_source_pmtiles(path: &Path, region_tile: &[u8], coarse_tile: &[u8]) -> Vec<u8> {
     let file = std::fs::File::create(path).expect("source file should be created");
-    let mut writer = PmTilesWriter::new(TileType::Png)
+    let mut writer = PmTilesWriter::new(TileType::Mvt)
         .min_zoom(0)
         .max_zoom(6)
         .bounds(-180.0, -85.051_129, 180.0, 85.051_129)
@@ -216,6 +216,7 @@ fn create_source_pmtiles(path: &Path, region_tile: &[u8], coarse_tile: &[u8]) ->
 }
 
 fn app_config(temp_dir: &TempDir, base_url: &str) -> AppConfig {
+    create_vendored_basemap_assets(&temp_dir.path().join("vendored-basemap"));
     AppConfig {
         database_url: format!(
             "sqlite:{}?mode=rwc",
@@ -224,11 +225,49 @@ fn app_config(temp_dir: &TempDir, base_url: &str) -> AppConfig {
         listen_addr: "127.0.0.1:0".parse().expect("listen addr should parse"),
         pmtiles_path: None,
         pmtiles_style_path: None,
+        vendored_basemap_dir: temp_dir.path().join("vendored-basemap"),
         managed_maps_dir: Some(temp_dir.path().join("managed-maps")),
         protomaps_builds_metadata_url: format!("{base_url}/builds.json"),
         protomaps_builds_base_url: base_url.to_owned(),
-        protomaps_style_base_url: "https://npm-style.protomaps.dev/style.json".to_owned(),
     }
+}
+
+fn create_vendored_basemap_assets(base_dir: &Path) {
+    std::fs::create_dir_all(base_dir.join("fonts").join("Noto Sans Italic"))
+        .expect("font dir should be created");
+    std::fs::write(
+        base_dir.join("style.json"),
+        serde_json::json!({
+            "version": 8,
+            "sprite": "https://example.invalid/assets/sprites/light",
+            "glyphs": "https://example.invalid/assets/fonts/{fontstack}/{range}.pbf",
+            "sources": {
+                "protomaps": {
+                    "type": "vector",
+                    "url": "https://example.invalid/tiles.json"
+                }
+            },
+            "layers": []
+        })
+        .to_string(),
+    )
+    .expect("style should be written");
+    std::fs::write(base_dir.join("sprite.json"), br#"{"test":"sprite"}"#)
+        .expect("sprite json should be written");
+    std::fs::write(base_dir.join("sprite.png"), [1, 2, 3, 4])
+        .expect("sprite png should be written");
+    std::fs::write(base_dir.join("sprite@2x.json"), br#"{"test":"sprite-2x"}"#)
+        .expect("hidpi sprite json should be written");
+    std::fs::write(base_dir.join("sprite@2x.png"), [4, 3, 2, 1])
+        .expect("hidpi sprite png should be written");
+    std::fs::write(
+        base_dir
+            .join("fonts")
+            .join("Noto Sans Italic")
+            .join("0-255.pbf"),
+        b"glyphs",
+    )
+    .expect("font range should be written");
 }
 
 async fn wait_for_all_jobs(router: &Router) {
@@ -487,6 +526,32 @@ async fn materializes_world_and_area_chunks_then_rebuilds_them_for_a_new_selecte
         Some("http://maps.test/api/basemap/style.json")
     );
 
+    let style_response = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/api/basemap/style.json")
+                .header("host", "maps.test")
+                .body(Body::empty())
+                .expect("style request should build"),
+        )
+        .await
+        .expect("style request should succeed");
+    assert_eq!(style_response.status(), StatusCode::OK);
+    let style_payload = json_response(style_response).await;
+    assert_eq!(
+        style_payload["sprite"].as_str(),
+        Some("http://maps.test/api/basemap/sprite")
+    );
+    assert_eq!(
+        style_payload["glyphs"].as_str(),
+        Some("http://maps.test/api/basemap/fonts/{fontstack}/{range}.pbf")
+    );
+    assert_eq!(
+        style_payload["sources"]["protomaps"]["url"].as_str(),
+        Some("http://maps.test/api/basemap/tilejson.json")
+    );
+
     let tilejson_response = router
         .clone()
         .oneshot(
@@ -503,6 +568,35 @@ async fn materializes_world_and_area_chunks_then_rebuilds_them_for_a_new_selecte
         tilejson_payload["tiles"][0].as_str(),
         Some("http://maps.test/api/basemap/tiles/{z}/{x}/{y}")
     );
+
+    let sprite_json_response = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/api/basemap/sprite.json")
+                .body(Body::empty())
+                .expect("sprite request should build"),
+        )
+        .await
+        .expect("sprite request should succeed");
+    assert_eq!(sprite_json_response.status(), StatusCode::OK);
+    assert_eq!(
+        bytes_response(sprite_json_response).await,
+        br#"{"test":"sprite"}"#
+    );
+
+    let font_response = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/api/basemap/fonts/Noto%20Sans%20Italic/0-255.pbf")
+                .body(Body::empty())
+                .expect("font request should build"),
+        )
+        .await
+        .expect("font request should succeed");
+    assert_eq!(font_response.status(), StatusCode::OK);
+    assert_eq!(bytes_response(font_response).await, b"glyphs");
 
     let region_tile_response = router
         .clone()

@@ -74,11 +74,11 @@ async fn bootstrap_creates_and_reuses_owner_id_for_same_database() {
         listen_addr: "127.0.0.1:0".parse().expect("valid socket address"),
         pmtiles_path: None,
         pmtiles_style_path: None,
+        vendored_basemap_dir: temp_dir.path().join("vendored-basemap"),
         managed_maps_dir: Some(temp_dir.path().join("managed-maps")),
         protomaps_builds_metadata_url: "https://build-metadata.protomaps.dev/builds.json"
             .to_owned(),
         protomaps_builds_base_url: "https://build.protomaps.com".to_owned(),
-        protomaps_style_base_url: "https://npm-style.protomaps.dev/style.json".to_owned(),
     })
     .await
     .expect("first bootstrap should succeed");
@@ -91,11 +91,11 @@ async fn bootstrap_creates_and_reuses_owner_id_for_same_database() {
         listen_addr: "127.0.0.1:0".parse().expect("valid socket address"),
         pmtiles_path: None,
         pmtiles_style_path: None,
+        vendored_basemap_dir: temp_dir.path().join("vendored-basemap"),
         managed_maps_dir: Some(temp_dir.path().join("managed-maps")),
         protomaps_builds_metadata_url: "https://build-metadata.protomaps.dev/builds.json"
             .to_owned(),
         protomaps_builds_base_url: "https://build.protomaps.com".to_owned(),
-        protomaps_style_base_url: "https://npm-style.protomaps.dev/style.json".to_owned(),
     })
     .await
     .expect("second bootstrap should succeed");

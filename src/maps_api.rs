@@ -32,6 +32,17 @@ pub fn build_router() -> Router<Arc<AppContext>> {
         )
         .route("/api/basemap", get(get_basemap_config))
         .route("/api/basemap/style.json", get(get_basemap_style))
+        .route("/api/basemap/fonts/{*font_path}", get(get_basemap_font))
+        .route("/api/basemap/sprite.json", get(get_basemap_sprite_json))
+        .route("/api/basemap/sprite.png", get(get_basemap_sprite_png))
+        .route(
+            "/api/basemap/sprite@2x.json",
+            get(get_basemap_sprite_json_hidpi),
+        )
+        .route(
+            "/api/basemap/sprite@2x.png",
+            get(get_basemap_sprite_png_hidpi),
+        )
         .route("/api/basemap/tilejson.json", get(get_basemap_tilejson))
         .route("/api/basemap/tiles/{z}/{x}/{y}", get(get_basemap_tile))
 }
@@ -301,6 +312,77 @@ async fn get_basemap_tilejson(
     )))
 }
 
+async fn get_basemap_font(
+    State(context): State<Arc<AppContext>>,
+    Path(font_path): Path<String>,
+) -> AppResult<impl axum::response::IntoResponse> {
+    let normalized_path = font_path.trim_start_matches('/');
+    let (fontstack, range_path) = normalized_path
+        .rsplit_once('/')
+        .ok_or_else(|| AppError::InvalidRequest("invalid managed font asset path".to_owned()))?;
+    let range = range_path
+        .strip_suffix(".pbf")
+        .ok_or_else(|| AppError::InvalidRequest("invalid managed font asset path".to_owned()))?;
+    let bytes = context
+        .maps()
+        .managed_font_bytes(fontstack, range)
+        .await?
+        .ok_or_else(|| AppError::InvalidRequest("No managed font asset is available".to_owned()))?;
+    build_binary_response(bytes, "application/x-protobuf")
+}
+
+async fn get_basemap_sprite_json(
+    State(context): State<Arc<AppContext>>,
+) -> AppResult<impl axum::response::IntoResponse> {
+    let bytes = context
+        .maps()
+        .managed_sprite_json(false)
+        .await?
+        .ok_or_else(|| {
+            AppError::InvalidRequest("No managed sprite asset is available".to_owned())
+        })?;
+    build_binary_response(bytes, "application/json")
+}
+
+async fn get_basemap_sprite_png(
+    State(context): State<Arc<AppContext>>,
+) -> AppResult<impl axum::response::IntoResponse> {
+    let bytes = context
+        .maps()
+        .managed_sprite_png(false)
+        .await?
+        .ok_or_else(|| {
+            AppError::InvalidRequest("No managed sprite asset is available".to_owned())
+        })?;
+    build_binary_response(bytes, "image/png")
+}
+
+async fn get_basemap_sprite_json_hidpi(
+    State(context): State<Arc<AppContext>>,
+) -> AppResult<impl axum::response::IntoResponse> {
+    let bytes = context
+        .maps()
+        .managed_sprite_json(true)
+        .await?
+        .ok_or_else(|| {
+            AppError::InvalidRequest("No managed sprite asset is available".to_owned())
+        })?;
+    build_binary_response(bytes, "application/json")
+}
+
+async fn get_basemap_sprite_png_hidpi(
+    State(context): State<Arc<AppContext>>,
+) -> AppResult<impl axum::response::IntoResponse> {
+    let bytes = context
+        .maps()
+        .managed_sprite_png(true)
+        .await?
+        .ok_or_else(|| {
+            AppError::InvalidRequest("No managed sprite asset is available".to_owned())
+        })?;
+    build_binary_response(bytes, "image/png")
+}
+
 async fn get_basemap_tile(
     State(context): State<Arc<AppContext>>,
     Path((z, x, y)): Path<(u8, u32, u32)>,
@@ -425,6 +507,17 @@ fn build_tile_response(
     response
         .body(axum::body::Body::from(tile))
         .map_err(|error| AppError::Internal(format!("could not build tile response: {error}")))
+}
+
+fn build_binary_response(
+    body: bytes::Bytes,
+    content_type: &'static str,
+) -> AppResult<axum::response::Response> {
+    axum::response::Response::builder()
+        .status(StatusCode::OK)
+        .header(axum::http::header::CONTENT_TYPE, content_type)
+        .body(axum::body::Body::from(body))
+        .map_err(|error| AppError::Internal(format!("could not build asset response: {error}")))
 }
 
 fn tile_type_name(tile_type: pmtiles::TileType) -> &'static str {
