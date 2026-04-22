@@ -11,6 +11,22 @@ use tower::util::ServiceExt;
 
 use map_travel::{AppConfig, AppContext, build_router};
 
+const SAMPLE_GPX: &str = r#"<?xml version="1.0" encoding="UTF-8"?>
+<gpx version="1.1" creator="map-travel-test" xmlns="http://www.topografix.com/GPX/1/1">
+  <trk>
+    <name>Mueller Hut Track</name>
+    <trkseg>
+      <trkpt lat="-43.7219" lon="170.0937">
+        <time>2026-02-10T08:00:00Z</time>
+      </trkpt>
+      <trkpt lat="-43.7201" lon="170.1049">
+        <time>2026-02-10T09:30:00Z</time>
+      </trkpt>
+    </trkseg>
+  </trk>
+</gpx>
+"#;
+
 async fn json_response(response: axum::response::Response) -> Value {
     let bytes = response
         .into_body()
@@ -19,6 +35,23 @@ async fn json_response(response: axum::response::Response) -> Value {
         .expect("response body should collect")
         .to_bytes();
     serde_json::from_slice(&bytes).expect("response should be valid JSON")
+}
+
+fn multipart_request(filename: &str, content_type: &str, body: &str) -> Request<Body> {
+    let boundary = "X-BOUNDARY";
+    let multipart_body = format!(
+        "--{boundary}\r\nContent-Disposition: form-data; name=\"file\"; filename=\"{filename}\"\r\nContent-Type: {content_type}\r\n\r\n{body}\r\n--{boundary}--\r\n"
+    );
+
+    Request::builder()
+        .method("POST")
+        .uri("/api/tracks/import")
+        .header(
+            "content-type",
+            format!("multipart/form-data; boundary={boundary}"),
+        )
+        .body(Body::from(multipart_body))
+        .expect("multipart request should build")
 }
 
 #[tokio::test]
@@ -166,4 +199,115 @@ async fn creates_places_and_filters_them_by_bounds_collection_and_type() {
             .expect("tracks should be an array")
             .is_empty()
     );
+}
+
+#[tokio::test]
+async fn updates_selected_place_fields() {
+    let context = Arc::new(
+        AppContext::bootstrap(AppConfig::for_tests())
+            .await
+            .expect("test bootstrap should succeed"),
+    );
+    let router = build_router(context);
+
+    let create_response = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/places")
+                .header("content-type", mime::APPLICATION_JSON.as_ref())
+                .body(Body::from(
+                    json!({
+                        "name": "Old Name",
+                        "category": "lookout",
+                        "notes": "Before update",
+                        "latitude": -27.4698,
+                        "longitude": 153.0251,
+                        "visit_start": null,
+                        "visit_end": null,
+                        "collection_ids": [],
+                        "tag_names": []
+                    })
+                    .to_string(),
+                ))
+                .expect("place request should build"),
+        )
+        .await
+        .expect("place request should succeed");
+    let created = json_response(create_response).await;
+    let place_id = created["id"].as_str().expect("place id").to_owned();
+
+    let update_response = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("PATCH")
+                .uri(format!("/api/places/{place_id}"))
+                .header("content-type", mime::APPLICATION_JSON.as_ref())
+                .body(Body::from(
+                    json!({
+                        "name": "New Name",
+                        "category": "camp",
+                        "notes": "After update"
+                    })
+                    .to_string(),
+                ))
+                .expect("update request should build"),
+        )
+        .await
+        .expect("update request should succeed");
+    assert_eq!(update_response.status(), StatusCode::OK);
+    let updated = json_response(update_response).await;
+    assert_eq!(updated["name"], "New Name");
+    assert_eq!(updated["category"], "camp");
+    assert_eq!(updated["notes"], "After update");
+}
+
+#[tokio::test]
+async fn updates_imported_track_fields() {
+    let context = Arc::new(
+        AppContext::bootstrap(AppConfig::for_tests())
+            .await
+            .expect("test bootstrap should succeed"),
+    );
+    let router = build_router(context);
+
+    let import_response = router
+        .clone()
+        .oneshot(multipart_request(
+            "mueller-hut.gpx",
+            "application/gpx+xml",
+            SAMPLE_GPX,
+        ))
+        .await
+        .expect("import request should succeed");
+    let imported = json_response(import_response).await;
+    let track_id = imported["tracks"][0]["id"]
+        .as_str()
+        .expect("track id")
+        .to_owned();
+
+    let update_response = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("PATCH")
+                .uri(format!("/api/tracks/{track_id}"))
+                .header("content-type", mime::APPLICATION_JSON.as_ref())
+                .body(Body::from(
+                    json!({
+                        "title": "Renamed Track",
+                        "notes": "Updated notes"
+                    })
+                    .to_string(),
+                ))
+                .expect("update request should build"),
+        )
+        .await
+        .expect("update request should succeed");
+    assert_eq!(update_response.status(), StatusCode::OK);
+    let updated = json_response(update_response).await;
+    assert_eq!(updated["title"], "Renamed Track");
+    assert_eq!(updated["notes"], "Updated notes");
 }

@@ -278,6 +278,35 @@ button.secondary.active {
   letter-spacing: -0.03em;
 }
 
+.viewport-object-list {
+  display: grid;
+  gap: 10px;
+}
+
+.viewport-object-row {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  text-align: left;
+}
+
+.viewport-object-copy {
+  display: grid;
+  gap: 4px;
+}
+
+.viewport-object-copy strong {
+  color: var(--ink);
+}
+
+.viewport-object-copy span,
+.viewport-object-distance {
+  color: var(--muted);
+  font-size: 0.84rem;
+}
+
 .meta-row {
   display: flex;
   flex-wrap: wrap;

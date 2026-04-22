@@ -4,6 +4,8 @@ import maplibregl, {
 	type StyleSpecification,
 } from "maplibre-gl";
 import "maplibre-gl/dist/maplibre-gl.css";
+import { displayTrackColor } from "./track-display";
+import { sortViewportObjectsByDistance } from "./viewport-objects";
 import "./styles.css";
 
 type CollectionKind = "trip" | "future" | "past" | "general";
@@ -161,6 +163,11 @@ interface AreaSelectionState {
 interface AreaExtractFormState {
 	label: string;
 	maxZoom: string;
+}
+
+interface SelectedMapObjectState {
+	id: string;
+	objectType: ObjectType;
 }
 
 const app = document.querySelector<HTMLDivElement>("#app");
@@ -367,6 +374,7 @@ let areaExtractForm: AreaExtractFormState = {
 	label: "Regional detail",
 	maxZoom: "8",
 };
+let selectedMapObject: SelectedMapObjectState | null = null;
 let currentView: ViewMode = getViewFromLocation();
 let settingsRefreshTimer: number | null = null;
 
@@ -411,6 +419,14 @@ async function bootstrap(): Promise<void> {
 				latitude: Number(event.lngLat.lat.toFixed(6)),
 				longitude: Number(event.lngLat.lng.toFixed(6)),
 			});
+			return;
+		}
+		const clickedFeatures = workspaceMap.queryRenderedFeatures(event.point, {
+			layers: ["tracks-line", "places-circle"],
+		});
+		if (clickedFeatures.length === 0) {
+			selectedMapObject = null;
+			renderDrawerEmpty();
 		}
 	});
 
@@ -636,6 +652,7 @@ async function refreshMapData(): Promise<void> {
 	viewportDetail.textContent = describeBounds(
 		bounds.toArray() as LngLatBoundsLike,
 	);
+	syncDrawerSelection();
 }
 
 function ensureWorkspaceOverlayLayers(): void {
@@ -659,7 +676,7 @@ function ensureWorkspaceOverlayLayers(): void {
 			type: "line",
 			source: "tracks",
 			paint: {
-				"line-color": "#bb5f3a",
+				"line-color": ["get", "display_color"],
 				"line-width": 4,
 				"line-opacity": 0.9,
 			},
@@ -766,11 +783,8 @@ function updateWorkspaceOverlaySources(): void {
 }
 
 function renderDrawerEmpty(): void {
-	detailPanel.innerHTML = `
-    <div class="drawer-empty">
-      Select a track or place on the map, or switch to place mode and click on the map to capture a new point.
-    </div>
-  `;
+	selectedMapObject = null;
+	renderViewportObjectList();
 }
 
 function updateDrawerMessage(message: string): void {
@@ -778,9 +792,16 @@ function updateDrawerMessage(message: string): void {
 }
 
 function renderTrackDetail(track: TrackRecord): void {
+	selectedMapObject = {
+		id: track.id,
+		objectType: "track",
+	};
 	detailPanel.innerHTML = `
     <div class="drawer-card">
       <h2>${escapeHtml(track.title ?? "Untitled track")}</h2>
+      <div class="inline-actions">
+        <button id="edit-track" class="secondary" type="button">Edit</button>
+      </div>
       <div class="meta-row">
         <span class="meta-pill">Track</span>
         ${track.distance_m ? `<span class="meta-pill">${Math.round(track.distance_m)} m</span>` : ""}
@@ -792,12 +813,23 @@ function renderTrackDetail(track: TrackRecord): void {
       </div>
     </div>
   `;
+
+	must<HTMLButtonElement>("#edit-track").addEventListener("click", () => {
+		openTrackEditor(track);
+	});
 }
 
 function renderPlaceDetail(place: PlaceRecord): void {
+	selectedMapObject = {
+		id: place.id,
+		objectType: "place",
+	};
 	detailPanel.innerHTML = `
     <div class="drawer-card">
       <h2>${escapeHtml(place.name)}</h2>
+      <div class="inline-actions">
+        <button id="edit-place" class="secondary" type="button">Edit</button>
+      </div>
       <div class="meta-row">
         <span class="meta-pill">Place</span>
         ${place.category ? `<span class="meta-pill">${escapeHtml(place.category)}</span>` : ""}
@@ -809,10 +841,110 @@ function renderPlaceDetail(place: PlaceRecord): void {
       </div>
     </div>
   `;
+
+	must<HTMLButtonElement>("#edit-place").addEventListener("click", () => {
+		openPlaceEditor(place);
+	});
+}
+
+function renderViewportObjectList(): void {
+	const center = workspaceMap.getCenter();
+	const items = sortViewportObjectsByDistance(
+		{
+			latitude: center.lat,
+			longitude: center.lng,
+		},
+		lastData.tracks,
+		lastData.places,
+	);
+
+	if (items.length === 0) {
+		detailPanel.innerHTML = `
+      <div class="drawer-empty">
+        No places or tracks are currently in view.
+      </div>
+    `;
+		return;
+	}
+
+	detailPanel.innerHTML = `
+    <div class="drawer-card">
+      <h2>In View</h2>
+      <div class="viewport-object-list">
+        ${items
+					.map(
+						(item) => `
+              <button
+                class="viewport-object-row secondary"
+                type="button"
+                data-object-id="${item.id}"
+                data-object-type="${item.objectType}"
+              >
+                <span class="viewport-object-copy">
+                  <strong>${escapeHtml(item.title)}</strong>
+                  <span>${item.objectType === "track" ? "Track" : "Place"}</span>
+                </span>
+                <span class="viewport-object-distance">${escapeHtml(formatDistance(item.distanceMeters))}</span>
+              </button>
+            `,
+					)
+					.join("")}
+      </div>
+    </div>
+  `;
+
+	for (const button of detailPanel.querySelectorAll<HTMLButtonElement>(
+		"[data-object-id][data-object-type]",
+	)) {
+		button.addEventListener("click", () => {
+			const objectId = button.dataset.objectId ?? "";
+			const objectType = button.dataset.objectType;
+			if (objectType === "track") {
+				const track = lastData.tracks.find((item) => item.id === objectId);
+				if (track) {
+					renderTrackDetail(track);
+				}
+				return;
+			}
+			if (objectType === "place") {
+				const place = lastData.places.find((item) => item.id === objectId);
+				if (place) {
+					renderPlaceDetail(place);
+				}
+			}
+		});
+	}
+}
+
+function syncDrawerSelection(): void {
+	if (pendingPlace) {
+		return;
+	}
+	if (!selectedMapObject) {
+		renderViewportObjectList();
+		return;
+	}
+	if (selectedMapObject.objectType === "track") {
+		const track = lastData.tracks.find((item) => item.id === selectedMapObject.id);
+		if (track) {
+			renderTrackDetail(track);
+			return;
+		}
+	}
+	if (selectedMapObject.objectType === "place") {
+		const place = lastData.places.find((item) => item.id === selectedMapObject.id);
+		if (place) {
+			renderPlaceDetail(place);
+			return;
+		}
+	}
+	selectedMapObject = null;
+	renderViewportObjectList();
 }
 
 function openPlaceDrawer(place: PendingPlaceState): void {
 	pendingPlace = place;
+	selectedMapObject = null;
 	addPlaceMode = true;
 	updateModeUi();
 	detailPanel.innerHTML = `
@@ -903,6 +1035,99 @@ function openPlaceDrawer(place: PendingPlaceState): void {
 		addPlaceMode = false;
 		updateModeUi();
 		renderDrawerEmpty();
+	});
+}
+
+function openTrackEditor(track: TrackRecord): void {
+	selectedMapObject = {
+		id: track.id,
+		objectType: "track",
+	};
+	detailPanel.innerHTML = `
+    <form id="track-edit-form" class="drawer-card">
+      <h2>Edit track</h2>
+      <div class="field-grid">
+        <label>
+          Title
+          <input name="title" type="text" value="${escapeHtml(track.title ?? "")}" />
+        </label>
+        <label>
+          Notes
+          <textarea name="notes">${escapeHtml(track.notes ?? "")}</textarea>
+        </label>
+      </div>
+      <div class="inline-actions">
+        <button type="submit">Save</button>
+        <button id="cancel-track-edit" class="secondary" type="button">Cancel</button>
+      </div>
+    </form>
+  `;
+
+	const form = must<HTMLFormElement>("#track-edit-form");
+	const cancelButton = must<HTMLButtonElement>("#cancel-track-edit");
+
+	form.addEventListener("submit", async (event) => {
+		event.preventDefault();
+		const formData = new FormData(form);
+		const updated = await patchJson<TrackRecord>(`/api/tracks/${track.id}`, {
+			title: optionalString(formData.get("title")),
+			notes: optionalString(formData.get("notes")),
+		});
+		await refreshMapData();
+		renderTrackDetail(updated);
+	});
+
+	cancelButton.addEventListener("click", () => {
+		renderTrackDetail(track);
+	});
+}
+
+function openPlaceEditor(place: PlaceRecord): void {
+	selectedMapObject = {
+		id: place.id,
+		objectType: "place",
+	};
+	detailPanel.innerHTML = `
+    <form id="place-edit-form" class="drawer-card">
+      <h2>Edit place</h2>
+      <div class="field-grid">
+        <label>
+          Name
+          <input name="name" type="text" required value="${escapeHtml(place.name)}" />
+        </label>
+        <label>
+          Category
+          <input name="category" type="text" value="${escapeHtml(place.category ?? "")}" />
+        </label>
+        <label>
+          Notes
+          <textarea name="notes">${escapeHtml(place.notes ?? "")}</textarea>
+        </label>
+      </div>
+      <div class="inline-actions">
+        <button type="submit">Save</button>
+        <button id="cancel-place-edit" class="secondary" type="button">Cancel</button>
+      </div>
+    </form>
+  `;
+
+	const form = must<HTMLFormElement>("#place-edit-form");
+	const cancelButton = must<HTMLButtonElement>("#cancel-place-edit");
+
+	form.addEventListener("submit", async (event) => {
+		event.preventDefault();
+		const formData = new FormData(form);
+		const updated = await patchJson<PlaceRecord>(`/api/places/${place.id}`, {
+			name: String(formData.get("name") ?? "").trim(),
+			category: optionalString(formData.get("category")),
+			notes: optionalString(formData.get("notes")),
+		});
+		await refreshMapData();
+		renderPlaceDetail(updated);
+	});
+
+	cancelButton.addEventListener("click", () => {
+		renderPlaceDetail(place);
 	});
 }
 
@@ -1516,6 +1741,13 @@ function formatTimestamp(value: string): string {
 	return new Date(value).toLocaleString();
 }
 
+function formatDistance(distanceMeters: number): string {
+	if (distanceMeters < 1000) {
+		return `${Math.round(distanceMeters)} m`;
+	}
+	return `${(distanceMeters / 1000).toFixed(1)} km`;
+}
+
 function renderChunkEditor(
 	chunk: MapsChunkRecord,
 	selectedBuildKey: string,
@@ -1613,6 +1845,7 @@ function buildTrackFeatureCollection(
 			properties: {
 				id: track.id,
 				title: track.title,
+				display_color: displayTrackColor(track.id),
 			},
 			geometry: JSON.parse(track.geometry_json) as GeoJSON.Geometry,
 		})),
@@ -1737,6 +1970,18 @@ async function postForm(url: string, payload: FormData): Promise<void> {
 	if (!response.ok) {
 		throw await buildHttpError(response);
 	}
+}
+
+async function patchJson<T>(url: string, payload: unknown): Promise<T> {
+	const response = await fetch(url, {
+		method: "PATCH",
+		headers: { "Content-Type": "application/json" },
+		body: JSON.stringify(payload),
+	});
+	if (!response.ok) {
+		throw await buildHttpError(response);
+	}
+	return (await response.json()) as T;
 }
 
 async function buildHttpError(response: Response): Promise<Error> {

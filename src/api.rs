@@ -3,9 +3,9 @@ use std::{io::BufReader, io::Cursor};
 
 use axum::{
     Json, Router,
-    extract::{DefaultBodyLimit, Multipart, Query, State},
+    extract::{DefaultBodyLimit, Multipart, Path, Query, State},
     http::StatusCode,
-    routing::{get, post},
+    routing::{get, patch, post},
 };
 use chrono::{DateTime, Utc};
 use geojson::Geometry;
@@ -29,10 +29,12 @@ pub fn build_router(context: Arc<AppContext>) -> Router {
         .route("/api/collections", post(create_collection))
         .route("/api/collections", get(list_collections))
         .route("/api/places", post(create_place))
+        .route("/api/places/{place_id}", patch(update_place))
         .route(
             "/api/tracks/import",
             post(import_tracks).layer(DefaultBodyLimit::max(MAX_GPX_UPLOAD_BYTES)),
         )
+        .route("/api/tracks/{track_id}", patch(update_track))
         .route("/api/map-objects", get(list_map_objects))
         .merge(crate::maps_api::build_router())
         .with_state(context)
@@ -136,6 +138,13 @@ struct PlaceResponse {
     is_public: bool,
 }
 
+#[derive(Debug, Deserialize)]
+struct UpdatePlaceRequest {
+    name: String,
+    category: Option<String>,
+    notes: Option<String>,
+}
+
 async fn create_place(
     State(context): State<Arc<AppContext>>,
     Json(request): Json<CreatePlaceRequest>,
@@ -218,6 +227,43 @@ async fn create_place(
             is_public: model.is_public,
         }),
     ))
+}
+
+async fn update_place(
+    State(context): State<Arc<AppContext>>,
+    Path(place_id): Path<String>,
+    Json(request): Json<UpdatePlaceRequest>,
+) -> AppResult<Json<PlaceResponse>> {
+    let existing = place::Entity::find_by_id(place_id)
+        .one(context.db())
+        .await?
+        .ok_or_else(|| AppError::InvalidRequest("place does not exist".to_owned()))?;
+    let trimmed_name = request.name.trim();
+    if trimmed_name.is_empty() {
+        return Err(AppError::InvalidRequest(
+            "place name must not be empty".to_owned(),
+        ));
+    }
+
+    let now = Utc::now();
+    let mut model: place::ActiveModel = existing.into();
+    model.name = Set(trimmed_name.to_owned());
+    model.category = Set(request.category.and_then(trim_optional_string));
+    model.notes = Set(request.notes.and_then(trim_optional_string));
+    model.updated_at = Set(now);
+    let updated = model.update(context.db()).await?;
+
+    Ok(Json(PlaceResponse {
+        id: updated.id,
+        name: updated.name,
+        category: updated.category,
+        notes: updated.notes,
+        latitude: updated.latitude,
+        longitude: updated.longitude,
+        visit_start: updated.visit_start,
+        visit_end: updated.visit_end,
+        is_public: updated.is_public,
+    }))
 }
 
 #[derive(Debug, Serialize)]
@@ -344,6 +390,12 @@ struct TrackResponse {
     end_time: Option<DateTime<Utc>>,
 }
 
+#[derive(Debug, Deserialize)]
+struct UpdateTrackRequest {
+    title: Option<String>,
+    notes: Option<String>,
+}
+
 async fn list_map_objects(
     State(context): State<Arc<AppContext>>,
     Query(query): Query<MapObjectsQuery>,
@@ -398,6 +450,38 @@ async fn list_map_objects(
     };
 
     Ok(Json(MapObjectsResponse { tracks, places }))
+}
+
+async fn update_track(
+    State(context): State<Arc<AppContext>>,
+    Path(track_id): Path<String>,
+    Json(request): Json<UpdateTrackRequest>,
+) -> AppResult<Json<TrackResponse>> {
+    let existing = track::Entity::find_by_id(track_id)
+        .one(context.db())
+        .await?
+        .ok_or_else(|| AppError::InvalidRequest("track does not exist".to_owned()))?;
+
+    let now = Utc::now();
+    let mut model: track::ActiveModel = existing.into();
+    model.title = Set(request.title.and_then(trim_optional_string));
+    model.notes = Set(request.notes.and_then(trim_optional_string));
+    model.updated_at = Set(now);
+    let updated = model.update(context.db()).await?;
+
+    Ok(Json(TrackResponse {
+        id: updated.id,
+        title: updated.title,
+        notes: updated.notes,
+        geometry_json: updated.geometry_json,
+        min_lat: updated.min_lat,
+        min_lon: updated.min_lon,
+        max_lat: updated.max_lat,
+        max_lon: updated.max_lon,
+        distance_m: updated.distance_m,
+        start_time: updated.start_time,
+        end_time: updated.end_time,
+    }))
 }
 
 fn place_condition(query: &MapObjectsQuery) -> AppResult<Condition> {
@@ -631,4 +715,13 @@ fn haversine_distance_m(from_lat: f64, from_lon: f64, to_lat: f64, to_lon: f64) 
     let c = 2.0 * a.sqrt().atan2((1.0 - a).sqrt());
 
     earth_radius_m * c
+}
+
+fn trim_optional_string(value: String) -> Option<String> {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        None
+    } else {
+        Some(trimmed.to_owned())
+    }
 }
