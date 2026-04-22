@@ -25,6 +25,7 @@ impl AppConfig {
     pub fn for_tests() -> Self {
         Self {
             database_url: "sqlite::memory:".to_owned(),
+            #[allow(clippy::expect_used)]
             listen_addr: "127.0.0.1:0"
                 .parse()
                 .expect("test listen address should parse"),

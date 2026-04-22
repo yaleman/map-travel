@@ -748,7 +748,7 @@ fn summarize_gpx_track(parsed_track: &gpx::Track) -> AppResult<TrackImportSummar
             segments
                 .into_iter()
                 .next()
-                .expect("one segment should exist for LineString"),
+                .ok_or_else(|| AppError::Internal("missing segment".to_string()))?,
         )
     } else {
         Geometry::new_multi_line_string(segments)
