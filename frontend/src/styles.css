@@ -434,6 +434,12 @@ button.secondary.active {
   gap: 12px;
 }
 
+.job-row-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
 .chunk-card-meta {
   display: flex;
   flex-wrap: wrap;
@@ -556,7 +562,8 @@ button.secondary.active {
   }
 
   .progress-copy,
-  .job-row-header {
+  .job-row-header,
+  .job-row-actions {
     align-items: start;
     flex-direction: column;
   }

@@ -2,3 +2,5 @@
 /frontend/dist
 /frontend/node_modules
 *.sqlite
+/.playwright-cli
+/maps

@@ -10,6 +10,10 @@ use thiserror::Error;
 pub enum AppError {
     #[error("database error: {0}")]
     Database(#[from] sea_orm::DbErr),
+    #[error("cancelled: {0}")]
+    Cancelled(String),
+    #[error("conflict: {0}")]
+    Conflict(String),
     #[error("invalid request: {0}")]
     InvalidRequest(String),
     #[error("internal error: {0}")]
@@ -24,6 +28,8 @@ struct ErrorBody {
 impl IntoResponse for AppError {
     fn into_response(self) -> Response {
         let status = match self {
+            Self::Cancelled(_) => StatusCode::CONFLICT,
+            Self::Conflict(_) => StatusCode::CONFLICT,
             Self::InvalidRequest(_) => StatusCode::BAD_REQUEST,
             Self::Database(_) | Self::Internal(_) => StatusCode::INTERNAL_SERVER_ERROR,
         };

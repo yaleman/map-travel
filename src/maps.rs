@@ -1,6 +1,7 @@
 use std::{
     collections::HashMap,
     path::PathBuf,
+    sync::atomic::{AtomicBool, Ordering},
     sync::Arc,
     time::Instant,
 };
@@ -27,6 +28,8 @@ use crate::{
 const SELECTED_BUILD_METADATA_KEY: &str = "selected_protomaps_build_key";
 const WORLD_TO_6_CHUNK_ID: &str = "world-to-6";
 const MAX_MERCATOR_LAT: f64 = 85.051_129;
+const ACTIVE_JOB_STATUSES: [&str; 3] = ["queued", "running", "cancel_requested"];
+const CANCELLED_STEP: &str = "Cancelled";
 
 #[derive(Clone, Debug)]
 pub struct MapsConfig {
@@ -42,6 +45,7 @@ pub struct MapsService {
     config: MapsConfig,
     client: pmtiles::reqwest::Client,
     readers: Arc<RwLock<HashMap<String, Arc<AsyncPmTilesReader<MmapBackend>>>>>,
+    cancel_flags: Arc<RwLock<HashMap<String, Arc<AtomicBool>>>>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -184,6 +188,7 @@ impl MapsService {
             config,
             client,
             readers: Arc::new(RwLock::new(HashMap::new())),
+            cancel_flags: Arc::new(RwLock::new(HashMap::new())),
         })
     }
 
@@ -312,6 +317,7 @@ impl MapsService {
     pub async fn queue_world_to_6(&self, build_key: &str) -> AppResult<EnqueuedJobResponse> {
         let chunk = self.ensure_world_chunk().await?;
         self.ensure_selected_build_key(build_key).await?;
+        self.ensure_chunk_ready_for_enqueue(build_key, &chunk.id).await?;
         let job = self
             .enqueue_job("world-to-6", build_key, Some(chunk.id.clone()))
             .await?;
@@ -333,24 +339,32 @@ impl MapsService {
         max_zoom: i32,
     ) -> AppResult<EnqueuedJobResponse> {
         validate_bbox(min_lon, min_lat, max_lon, max_lat)?;
-        let now = Utc::now();
-        let chunk = map_chunk::ActiveModel {
-            id: Set(Uuid::new_v4().to_string()),
-            label: Set(label),
-            kind: Set("area".to_owned()),
-            min_lon: Set(Some(min_lon)),
-            min_lat: Set(Some(min_lat)),
-            max_lon: Set(Some(max_lon)),
-            max_lat: Set(Some(max_lat)),
-            max_zoom: Set(max_zoom),
-            enabled: Set(true),
-            display_order: Set(self.next_display_order().await?),
-            created_at: Set(now),
-            updated_at: Set(now),
-        }
-        .insert(&self.db)
-        .await?;
         self.ensure_selected_build_key(build_key).await?;
+        let chunk = if let Some(existing) = self
+            .find_matching_area_chunk(min_lon, min_lat, max_lon, max_lat, max_zoom)
+            .await?
+        {
+            existing
+        } else {
+            let now = Utc::now();
+            map_chunk::ActiveModel {
+                id: Set(Uuid::new_v4().to_string()),
+                label: Set(label),
+                kind: Set("area".to_owned()),
+                min_lon: Set(Some(min_lon)),
+                min_lat: Set(Some(min_lat)),
+                max_lon: Set(Some(max_lon)),
+                max_lat: Set(Some(max_lat)),
+                max_zoom: Set(max_zoom),
+                enabled: Set(true),
+                display_order: Set(self.next_display_order().await?),
+                created_at: Set(now),
+                updated_at: Set(now),
+            }
+            .insert(&self.db)
+            .await?
+        };
+        self.ensure_chunk_ready_for_enqueue(build_key, &chunk.id).await?;
         let job = self
             .enqueue_job("area-extract", build_key, Some(chunk.id.clone()))
             .await?;
@@ -403,17 +417,16 @@ impl MapsService {
             query = query.filter(map_chunk::Column::Id.is_in(chunk_ids));
         }
         let chunks = query.all(&self.db).await?;
-        let archives = map_archive::Entity::find()
-            .filter(map_archive::Column::BuildKey.eq(build_key.to_owned()))
-            .all(&self.db)
-            .await?;
-        let built_chunk_ids = archives
-            .into_iter()
-            .map(|archive| archive.chunk_id)
-            .collect::<Vec<_>>();
         let mut job_ids = Vec::new();
         for chunk in chunks {
-            if built_chunk_ids.iter().any(|chunk_id| chunk_id == &chunk.id) {
+            if self
+                .archive_exists_for_chunk(build_key, &chunk.id)
+                .await?
+                || self
+                    .find_active_job_for_chunk(build_key, &chunk.id)
+                    .await?
+                    .is_some()
+            {
                 continue;
             }
             let job = self
@@ -423,6 +436,41 @@ impl MapsService {
             self.spawn_job(job.id);
         }
         Ok(RebuildChunksResponse { job_ids })
+    }
+
+    pub async fn cancel_job(&self, job_id: &str) -> AppResult<()> {
+        let Some(job) = map_job::Entity::find_by_id(job_id.to_owned())
+            .one(&self.db)
+            .await?
+        else {
+            return Err(AppError::InvalidRequest("map job does not exist".to_owned()));
+        };
+        let was_queued = job.status == "queued";
+
+        match job.status.as_str() {
+            "completed" | "failed" | "cancelled" => {
+                return Err(AppError::InvalidRequest(
+                    "map job is no longer active".to_owned(),
+                ));
+            }
+            _ => {}
+        }
+
+        self.set_cancel_flag(job_id, true).await;
+
+        let now = Utc::now();
+        let mut model: map_job::ActiveModel = job.into();
+        if was_queued {
+            model.status = Set("cancelled".to_owned());
+            model.current_step = Set(CANCELLED_STEP.to_owned());
+            model.finished_at = Set(Some(now));
+        } else {
+            model.status = Set("cancel_requested".to_owned());
+            model.current_step = Set("Cancellation requested".to_owned());
+        }
+        model.updated_at = Set(now);
+        model.update(&self.db).await?;
+        Ok(())
     }
 
     pub async fn managed_basemap_summary(&self) -> AppResult<Option<ManagedBasemapSummary>> {
@@ -614,8 +662,13 @@ impl MapsService {
             .one(&self.db)
             .await?
         else {
+            self.clear_cancel_flag(job_id).await;
             return Ok(());
         };
+        if job.status == "cancelled" || self.is_cancel_requested(job_id).await {
+            self.clear_cancel_flag(job_id).await;
+            return Ok(());
+        }
         let log_job_id = job.id.clone();
         let log_job_kind = job.kind.clone();
         let log_build_key = job.build_key.clone();
@@ -655,6 +708,20 @@ impl MapsService {
                 final_job.current_step = Set("Completed".to_owned());
                 final_job.progress_percent = Set(100);
             }
+            Err(AppError::Cancelled(reason)) => {
+                tracing::info!(
+                    job_id = %log_job_id,
+                    kind = %log_job_kind,
+                    build_key = %log_build_key,
+                    chunk_id = ?log_chunk_id,
+                    elapsed_ms = started.elapsed().as_millis(),
+                    reason = %reason,
+                    "managed map job cancelled"
+                );
+                final_job.status = Set("cancelled".to_owned());
+                final_job.error_message = Set(None);
+                final_job.current_step = Set(CANCELLED_STEP.to_owned());
+            }
             Err(error) => {
                 tracing::error!(
                     job_id = %log_job_id,
@@ -673,11 +740,13 @@ impl MapsService {
         final_job.finished_at = Set(Some(finished_at));
         final_job.updated_at = Set(finished_at);
         final_job.update(&self.db).await?;
+        self.clear_cancel_flag(job_id).await;
         Ok(())
     }
 
     async fn materialize_job(&self, job: &map_job::Model) -> AppResult<String> {
         let started = Instant::now();
+        let cancel_flag = self.cancel_flag(&job.id).await;
         let chunk_id = job
             .chunk_id
             .clone()
@@ -686,6 +755,7 @@ impl MapsService {
             .one(&self.db)
             .await?
             .ok_or_else(|| AppError::Internal("map chunk should exist for job".to_owned()))?;
+        self.ensure_job_not_cancelled(&job.id).await?;
         let log_chunk_id = chunk.id.clone();
         let log_chunk_label = chunk.label.clone();
 
@@ -744,6 +814,7 @@ impl MapsService {
         let segments_total = i32::try_from(coords.len()).map_err(|error| {
             AppError::Internal(format!("too many tile segments in job: {error}"))
         })?;
+        self.ensure_job_not_cancelled(&job.id).await?;
         tracing::info!(
             job_id = %job.id,
             chunk_id = %log_chunk_id,
@@ -769,6 +840,7 @@ impl MapsService {
         let mut found_any_tiles = false;
         let total_coords = coords.len();
         for (index, coord) in coords.into_iter().enumerate() {
+            self.ensure_job_not_cancelled(&job.id).await?;
             if let Some(tile) = reader.get_tile(coord).await.map_err(|error| {
                 AppError::Internal(format!("could not read remote PMTiles tile: {error}"))
             })? {
@@ -849,6 +921,10 @@ impl MapsService {
                     AppError::Internal(format!("could not create PMTiles writer: {error}"))
                 })?;
             for (coord, tile) in tiles {
+                if cancel_flag.load(Ordering::Relaxed) {
+                    let _ = std::fs::remove_file(&absolute_path);
+                    return Err(AppError::Cancelled("map download was cancelled".to_owned()));
+                }
                 writer.add_raw_tile(coord, &tile).map_err(|error| {
                     AppError::Internal(format!("could not write PMTiles tile: {error}"))
                 })?;
@@ -856,6 +932,10 @@ impl MapsService {
             writer.finalize().map_err(|error| {
                 AppError::Internal(format!("could not finalize PMTiles archive: {error}"))
             })?;
+        }
+        if cancel_flag.load(Ordering::Relaxed) {
+            let _ = std::fs::remove_file(&absolute_path);
+            return Err(AppError::Cancelled("map download was cancelled".to_owned()));
         }
         self.update_job_progress(
             &job.id,
@@ -1018,7 +1098,7 @@ impl MapsService {
         chunk_id: Option<String>,
     ) -> AppResult<map_job::Model> {
         let now = Utc::now();
-        map_job::ActiveModel {
+        let job = map_job::ActiveModel {
             id: Set(Uuid::new_v4().to_string()),
             kind: Set(kind.to_owned()),
             status: Set("queued".to_owned()),
@@ -1036,8 +1116,9 @@ impl MapsService {
             finished_at: Set(None),
         }
         .insert(&self.db)
-        .await
-        .map_err(Into::into)
+        .await?;
+        self.set_cancel_flag(&job.id, false).await;
+        Ok(job)
     }
 
     async fn update_job_progress(
@@ -1064,6 +1145,96 @@ impl MapsService {
         model.updated_at = Set(now);
         model.update(&self.db).await?;
         Ok(())
+    }
+
+    async fn find_matching_area_chunk(
+        &self,
+        min_lon: f64,
+        min_lat: f64,
+        max_lon: f64,
+        max_lat: f64,
+        max_zoom: i32,
+    ) -> AppResult<Option<map_chunk::Model>> {
+        map_chunk::Entity::find()
+            .filter(map_chunk::Column::Kind.eq("area"))
+            .filter(map_chunk::Column::MinLon.eq(Some(min_lon)))
+            .filter(map_chunk::Column::MinLat.eq(Some(min_lat)))
+            .filter(map_chunk::Column::MaxLon.eq(Some(max_lon)))
+            .filter(map_chunk::Column::MaxLat.eq(Some(max_lat)))
+            .filter(map_chunk::Column::MaxZoom.eq(max_zoom))
+            .one(&self.db)
+            .await
+            .map_err(Into::into)
+    }
+
+    async fn ensure_chunk_ready_for_enqueue(
+        &self,
+        build_key: &str,
+        chunk_id: &str,
+    ) -> AppResult<()> {
+        if self.archive_exists_for_chunk(build_key, chunk_id).await? {
+            return Err(AppError::Conflict(
+                "map segment is already downloaded for this build".to_owned(),
+            ));
+        }
+        if let Some(job) = self.find_active_job_for_chunk(build_key, chunk_id).await? {
+            return Err(AppError::Conflict(format!(
+                "map job {} is already active for this segment",
+                job.id
+            )));
+        }
+        Ok(())
+    }
+
+    async fn archive_exists_for_chunk(&self, build_key: &str, chunk_id: &str) -> AppResult<bool> {
+        Ok(map_archive::Entity::find()
+            .filter(map_archive::Column::BuildKey.eq(build_key.to_owned()))
+            .filter(map_archive::Column::ChunkId.eq(chunk_id.to_owned()))
+            .one(&self.db)
+            .await?
+            .is_some())
+    }
+
+    async fn find_active_job_for_chunk(
+        &self,
+        build_key: &str,
+        chunk_id: &str,
+    ) -> AppResult<Option<map_job::Model>> {
+        map_job::Entity::find()
+            .filter(map_job::Column::BuildKey.eq(build_key.to_owned()))
+            .filter(map_job::Column::ChunkId.eq(chunk_id.to_owned()))
+            .filter(map_job::Column::Status.is_in(ACTIVE_JOB_STATUSES))
+            .order_by_desc(map_job::Column::CreatedAt)
+            .one(&self.db)
+            .await
+            .map_err(Into::into)
+    }
+
+    async fn ensure_job_not_cancelled(&self, job_id: &str) -> AppResult<()> {
+        if self.is_cancel_requested(job_id).await {
+            return Err(AppError::Cancelled("map download was cancelled".to_owned()));
+        }
+        Ok(())
+    }
+
+    async fn is_cancel_requested(&self, job_id: &str) -> bool {
+        self.cancel_flag(job_id).await.load(Ordering::Relaxed)
+    }
+
+    async fn set_cancel_flag(&self, job_id: &str, cancelled: bool) {
+        let flag = self.cancel_flag(job_id).await;
+        flag.store(cancelled, Ordering::Relaxed);
+    }
+
+    async fn clear_cancel_flag(&self, job_id: &str) {
+        self.cancel_flags.write().await.remove(job_id);
+    }
+
+    async fn cancel_flag(&self, job_id: &str) -> Arc<AtomicBool> {
+        let mut flags = self.cancel_flags.write().await;
+        flags.entry(job_id.to_owned())
+            .or_insert_with(|| Arc::new(AtomicBool::new(false)))
+            .clone()
     }
 
     async fn ensure_selected_build_key(&self, build_key: &str) -> AppResult<()> {

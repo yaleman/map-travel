@@ -29,6 +29,7 @@ struct MockBuild {
 struct MockServerState {
     builds_json: Value,
     files: Arc<HashMap<String, Arc<Vec<u8>>>>,
+    delay_ms: u64,
 }
 
 async fn json_response(response: axum::response::Response) -> Value {
@@ -79,6 +80,10 @@ async fn pmtiles_handler(
     let end = end.parse::<usize>().expect("range end should parse");
     let slice = &bytes[start..=end];
 
+    if state.delay_ms > 0 {
+        tokio::time::sleep(std::time::Duration::from_millis(state.delay_ms)).await;
+    }
+
     Response::builder()
         .status(StatusCode::PARTIAL_CONTENT)
         .header(CONTENT_LENGTH, HeaderValue::from(slice.len()))
@@ -94,6 +99,13 @@ async fn pmtiles_handler(
 
 async fn spawn_mock_server(
     builds: Vec<MockBuild>,
+) -> (String, oneshot::Sender<()>, tokio::task::JoinHandle<()>) {
+    spawn_mock_server_with_delay(builds, 0).await
+}
+
+async fn spawn_mock_server_with_delay(
+    builds: Vec<MockBuild>,
+    delay_ms: u64,
 ) -> (String, oneshot::Sender<()>, tokio::task::JoinHandle<()>) {
     let builds_json = Value::Array(
         builds
@@ -115,6 +127,7 @@ async fn spawn_mock_server(
     let state = Arc::new(MockServerState {
         builds_json,
         files: Arc::new(files),
+        delay_ms,
     });
     let router = Router::new()
         .route("/builds.json", get(builds_handler))
@@ -232,7 +245,7 @@ async fn wait_for_all_jobs(router: &Router) {
         let jobs = payload["jobs"].as_array().expect("jobs should be an array");
         if jobs
             .iter()
-            .all(|job| matches!(job["status"].as_str(), Some("completed" | "failed")))
+            .all(|job| matches!(job["status"].as_str(), Some("completed" | "failed" | "cancelled")))
         {
             return;
         }
@@ -453,6 +466,40 @@ async fn materializes_world_and_area_chunks_then_rebuilds_them_for_a_new_selecte
     .await;
     assert_eq!(active_layers_response.status(), StatusCode::OK);
 
+    let basemap_config_response = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/api/basemap")
+                .header("host", "maps.test")
+                .body(Body::empty())
+                .expect("basemap request should build"),
+        )
+        .await
+        .expect("basemap request should succeed");
+    let basemap_config_payload = json_response(basemap_config_response).await;
+    assert_eq!(
+        basemap_config_payload["style_url"].as_str(),
+        Some("http://maps.test/api/basemap/style.json")
+    );
+
+    let tilejson_response = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/api/basemap/tilejson.json")
+                .header("host", "maps.test")
+                .body(Body::empty())
+                .expect("tilejson request should build"),
+        )
+        .await
+        .expect("tilejson request should succeed");
+    let tilejson_payload = json_response(tilejson_response).await;
+    assert_eq!(
+        tilejson_payload["tiles"][0].as_str(),
+        Some("http://maps.test/api/basemap/tiles/{z}/{x}/{y}")
+    );
+
     let region_tile_response = router
         .clone()
         .oneshot(
@@ -583,6 +630,190 @@ async fn materializes_world_and_area_chunks_then_rebuilds_them_for_a_new_selecte
     assert_eq!(
         bytes_response(rebuilt_fallback_tile_response).await,
         b"coarse-b"
+    );
+
+    shutdown_tx.send(()).expect("mock server should shut down");
+    handle.await.expect("mock server task should finish");
+}
+
+#[tokio::test]
+async fn cancels_running_world_job_and_rejects_duplicate_world_requests() {
+    let temp_dir = TempDir::new().expect("temp dir should be created");
+    let build_path = temp_dir.path().join("20260421.pmtiles");
+    let build_bytes = create_source_pmtiles(&build_path, b"region-a", b"coarse-a");
+
+    let (base_url, shutdown_tx, handle) = spawn_mock_server_with_delay(
+        vec![MockBuild {
+            key: "20260421.pmtiles".to_owned(),
+            bytes: Arc::new(build_bytes),
+        }],
+        20,
+    )
+    .await;
+
+    let context = Arc::new(
+        AppContext::bootstrap(app_config(&temp_dir, &base_url))
+            .await
+            .expect("bootstrap should succeed"),
+    );
+    let router = build_router(context);
+
+    let world_response = post_json(
+        &router,
+        "/api/settings/maps/world-to-6",
+        json!({ "build_key": "20260421.pmtiles" }),
+    )
+    .await;
+    assert_eq!(world_response.status(), StatusCode::CREATED);
+    let world_payload = json_response(world_response).await;
+    let job_id = world_payload["job_id"]
+        .as_str()
+        .expect("job id should exist")
+        .to_owned();
+
+    let duplicate_world_response = post_json(
+        &router,
+        "/api/settings/maps/world-to-6",
+        json!({ "build_key": "20260421.pmtiles" }),
+    )
+    .await;
+    assert_eq!(duplicate_world_response.status(), StatusCode::CONFLICT);
+
+    let cancel_response = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/api/settings/maps/jobs/{job_id}/cancel"))
+                .body(Body::empty())
+                .expect("cancel request should build"),
+        )
+        .await
+        .expect("cancel request should succeed");
+    assert_eq!(cancel_response.status(), StatusCode::OK);
+
+    wait_for_all_jobs(&router).await;
+
+    let jobs_response = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/api/settings/maps/jobs")
+                .body(Body::empty())
+                .expect("jobs request should build"),
+        )
+        .await
+        .expect("jobs request should succeed");
+    let jobs_payload = json_response(jobs_response).await;
+    let jobs = jobs_payload["jobs"].as_array().expect("jobs should be an array");
+    assert_eq!(jobs.len(), 1);
+    let cancelled_job = jobs
+        .iter()
+        .find(|job| job["id"].as_str() == Some(job_id.as_str()))
+        .expect("cancelled job should exist");
+    assert_eq!(cancelled_job["status"].as_str(), Some("cancelled"));
+    assert_eq!(cancelled_job["current_step"].as_str(), Some("Cancelled"));
+
+    let local_response = router
+        .oneshot(
+            Request::builder()
+                .uri("/api/settings/maps/local")
+                .body(Body::empty())
+                .expect("local maps request should build"),
+        )
+        .await
+        .expect("local maps request should succeed");
+    let local_payload = json_response(local_response).await;
+    let chunks = local_payload["chunks"]
+        .as_array()
+        .expect("chunks should be an array");
+    assert_eq!(chunks.len(), 1);
+    assert_eq!(chunks[0]["selected_build_ready"].as_bool(), Some(false));
+
+    shutdown_tx.send(()).expect("mock server should shut down");
+    handle.await.expect("mock server task should finish");
+}
+
+#[tokio::test]
+async fn rejects_duplicate_area_extract_jobs_without_creating_extra_chunks() {
+    let temp_dir = TempDir::new().expect("temp dir should be created");
+    let build_path = temp_dir.path().join("20260421.pmtiles");
+    let build_bytes = create_source_pmtiles(&build_path, b"region-a", b"coarse-a");
+
+    let (base_url, shutdown_tx, handle) = spawn_mock_server(
+        vec![MockBuild {
+            key: "20260421.pmtiles".to_owned(),
+            bytes: Arc::new(build_bytes),
+        }],
+    )
+    .await;
+
+    let context = Arc::new(
+        AppContext::bootstrap(app_config(&temp_dir, &base_url))
+            .await
+            .expect("bootstrap should succeed"),
+    );
+    let router = build_router(context);
+
+    let (min_lon, min_lat, max_lon, max_lat) = build_inner_bbox(2, 2, 1);
+    let request_body = json!({
+        "build_key": "20260421.pmtiles",
+        "label": "Regional detail",
+        "min_lon": min_lon,
+        "min_lat": min_lat,
+        "max_lon": max_lon,
+        "max_lat": max_lat,
+        "max_zoom": 2
+    });
+
+    let first_response = post_json(&router, "/api/settings/maps/area-extract", request_body.clone()).await;
+    assert_eq!(first_response.status(), StatusCode::CREATED);
+
+    let duplicate_while_running =
+        post_json(&router, "/api/settings/maps/area-extract", request_body.clone()).await;
+    assert_eq!(duplicate_while_running.status(), StatusCode::CONFLICT);
+
+    let local_during_download = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/api/settings/maps/local")
+                .body(Body::empty())
+                .expect("local maps request should build"),
+        )
+        .await
+        .expect("local maps request should succeed");
+    let local_during_download_payload = json_response(local_during_download).await;
+    assert_eq!(
+        local_during_download_payload["chunks"]
+            .as_array()
+            .expect("chunks should be an array")
+            .len(),
+        1
+    );
+
+    wait_for_all_jobs(&router).await;
+
+    let duplicate_after_completion =
+        post_json(&router, "/api/settings/maps/area-extract", request_body).await;
+    assert_eq!(duplicate_after_completion.status(), StatusCode::CONFLICT);
+
+    let local_after_completion = router
+        .oneshot(
+            Request::builder()
+                .uri("/api/settings/maps/local")
+                .body(Body::empty())
+                .expect("local maps request should build"),
+        )
+        .await
+        .expect("local maps request should succeed");
+    let local_after_completion_payload = json_response(local_after_completion).await;
+    assert_eq!(
+        local_after_completion_payload["chunks"]
+            .as_array()
+            .expect("chunks should be an array")
+            .len(),
+        1
     );
 
     shutdown_tx.send(()).expect("mock server should shut down");
