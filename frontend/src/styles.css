@@ -32,9 +32,25 @@ body {
   color: var(--ink);
 }
 
+.app-screen {
+  height: 100%;
+}
+
+.app-screen.hidden {
+  display: none;
+}
+
 .shell {
   display: grid;
   grid-template-columns: 320px minmax(0, 1fr) 360px;
+  gap: 16px;
+  height: 100%;
+  padding: 16px;
+}
+
+.settings-shell {
+  display: grid;
+  grid-template-columns: 420px minmax(0, 1fr);
   gap: 16px;
   height: 100%;
   padding: 16px;
@@ -303,49 +319,44 @@ button.secondary.active {
   margin-bottom: 4px;
 }
 
-.settings-panel {
-  position: absolute;
-  top: 18px;
-  right: 18px;
-  bottom: 18px;
-  width: min(420px, calc(100% - 36px));
-  display: grid;
-  grid-template-rows: auto minmax(0, 1fr);
-  gap: 0;
-  padding: 18px;
-  border-radius: 24px;
-  border: 1px solid rgba(35, 53, 48, 0.12);
-  background: rgba(255, 250, 240, 0.96);
-  box-shadow: var(--shadow);
-  backdrop-filter: blur(14px);
-  z-index: 3;
-}
-
-.settings-panel.hidden {
-  display: none;
-}
-
-.settings-header {
+.settings-screen-header {
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 12px;
-  padding-bottom: 14px;
+  padding-bottom: 18px;
   border-bottom: 1px solid var(--line);
+  margin-bottom: 18px;
 }
 
-.settings-header h2 {
+.settings-screen-header h1 {
   margin: 0;
-  font-size: 1.4rem;
-  letter-spacing: -0.03em;
+  font-size: 1.9rem;
+  letter-spacing: -0.04em;
 }
 
 .settings-content {
   min-height: 0;
   overflow: auto;
-  padding-top: 16px;
   display: grid;
   gap: 18px;
+}
+
+.settings-content-screen {
+  padding-top: 0;
+}
+
+.settings-sidebar {
+  min-width: 0;
+}
+
+.settings-map-panel {
+  min-width: 0;
+}
+
+#settings-map {
+  height: 100%;
+  width: 100%;
 }
 
 .settings-section {
@@ -441,6 +452,11 @@ button.secondary.active {
   .shell {
     grid-template-columns: 1fr;
     grid-template-rows: auto minmax(420px, 1fr) auto;
+  }
+
+  .settings-shell {
+    grid-template-columns: 1fr;
+    grid-template-rows: auto minmax(420px, 1fr);
   }
 
   .panel {

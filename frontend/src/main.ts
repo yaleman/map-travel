@@ -4,6 +4,7 @@ import "./styles.css";
 
 type CollectionKind = "trip" | "future" | "past" | "general";
 type ObjectType = "track" | "place";
+type ViewMode = "workspace" | "settings";
 
 interface CollectionRecord {
   id: string;
@@ -135,7 +136,6 @@ interface MapsJobsResponse {
 }
 
 interface SettingsState {
-  isOpen: boolean;
   isBusy: boolean;
   builds: MapsBuildRecord[];
   chunks: MapsChunkRecord[];
@@ -155,132 +155,153 @@ if (!app) {
 }
 
 app.innerHTML = `
-  <div class="shell">
-    <aside class="panel">
-      <div class="panel-scroll">
-        <div class="brand">
-          <div class="brand-title">
-            <h1>Map Travel</h1>
-            <span class="pill">v1</span>
-          </div>
-          <button id="open-settings" class="secondary" type="button">Settings</button>
-        </div>
-
-        <section class="section">
-          <h2>Tracks</h2>
-          <form id="import-form" class="field-grid">
-            <label>
-              GPX file
-              <input id="gpx-file" name="file" type="file" accept=".gpx,application/gpx+xml,text/xml,application/xml" required />
-            </label>
-            <button type="submit">Import GPX</button>
-          </form>
-        </section>
-
-        <section class="section">
-          <h2>Basemap</h2>
-          <div id="basemap-status" class="status">Checking PMTiles…</div>
-        </section>
-
-        <section class="section">
-          <h2>Filters</h2>
-          <div class="field-grid">
-            <label>
-              Type
-              <select id="filter-object-type">
-                <option value="">All</option>
-                <option value="place">Places</option>
-                <option value="track">Tracks</option>
-              </select>
-            </label>
-            <label>
-              Collection
-              <select id="filter-collection">
-                <option value="">All</option>
-              </select>
-            </label>
-            <label>
-              Tag
-              <input id="filter-tag" type="text" placeholder="future" />
-            </label>
-            <div class="field-grid two-up">
-              <label>
-                Starts after
-                <input id="filter-starts-after" type="datetime-local" />
-              </label>
-              <label>
-                Ends before
-                <input id="filter-ends-before" type="datetime-local" />
-              </label>
+  <section id="workspace-screen" class="app-screen">
+    <div class="shell">
+      <aside class="panel">
+        <div class="panel-scroll">
+          <div class="brand">
+            <div class="brand-title">
+              <h1>Map Travel</h1>
+              <span class="pill">v1</span>
             </div>
+            <button id="open-settings" class="secondary" type="button">Settings</button>
           </div>
-        </section>
 
-        <section class="section">
-          <h2>Collections</h2>
-          <form id="collection-form" class="field-grid">
-            <label>
-              Name
-              <input id="collection-name" type="text" placeholder="South Island Walks" required />
-            </label>
-            <label>
-              Kind
-              <select id="collection-kind">
-                <option value="trip">Trip</option>
-                <option value="future">Future</option>
-                <option value="past">Past</option>
-                <option value="general">General</option>
-              </select>
-            </label>
-            <button type="submit">Create collection</button>
-          </form>
-          <div id="collection-list" class="collection-list section-space"></div>
-        </section>
+          <section class="section">
+            <h2>Tracks</h2>
+            <form id="import-form" class="field-grid">
+              <label>
+                GPX file
+                <input id="gpx-file" name="file" type="file" accept=".gpx,application/gpx+xml,text/xml,application/xml" required />
+              </label>
+              <button type="submit">Import GPX</button>
+            </form>
+          </section>
 
-        <section class="section">
-          <h2>Places</h2>
-          <div class="inline-actions">
-            <button id="toggle-add-place" class="secondary" type="button">Add place</button>
-            <button id="refresh-map" class="secondary" type="button">Refresh</button>
-          </div>
-        </section>
-      </div>
-    </aside>
+          <section class="section">
+            <h2>Basemap</h2>
+            <div id="basemap-status" class="status">Checking PMTiles…</div>
+          </section>
 
-    <main class="panel map-panel">
-      <div id="map"></div>
-      <div class="map-overlay">
-        <div class="overlay-card">
-          <strong id="viewport-summary">Loading map…</strong>
-          <span id="viewport-detail">Move the map to load places and tracks.</span>
+          <section class="section">
+            <h2>Filters</h2>
+            <div class="field-grid">
+              <label>
+                Type
+                <select id="filter-object-type">
+                  <option value="">All</option>
+                  <option value="place">Places</option>
+                  <option value="track">Tracks</option>
+                </select>
+              </label>
+              <label>
+                Collection
+                <select id="filter-collection">
+                  <option value="">All</option>
+                </select>
+              </label>
+              <label>
+                Tag
+                <input id="filter-tag" type="text" placeholder="future" />
+              </label>
+              <div class="field-grid two-up">
+                <label>
+                  Starts after
+                  <input id="filter-starts-after" type="datetime-local" />
+                </label>
+                <label>
+                  Ends before
+                  <input id="filter-ends-before" type="datetime-local" />
+                </label>
+              </div>
+            </div>
+          </section>
+
+          <section class="section">
+            <h2>Collections</h2>
+            <form id="collection-form" class="field-grid">
+              <label>
+                Name
+                <input id="collection-name" type="text" placeholder="South Island Walks" required />
+              </label>
+              <label>
+                Kind
+                <select id="collection-kind">
+                  <option value="trip">Trip</option>
+                  <option value="future">Future</option>
+                  <option value="past">Past</option>
+                  <option value="general">General</option>
+                </select>
+              </label>
+              <button type="submit">Create collection</button>
+            </form>
+            <div id="collection-list" class="collection-list section-space"></div>
+          </section>
+
+          <section class="section">
+            <h2>Places</h2>
+            <div class="inline-actions">
+              <button id="toggle-add-place" class="secondary" type="button">Add place</button>
+              <button id="refresh-map" class="secondary" type="button">Refresh</button>
+            </div>
+          </section>
         </div>
-        <div class="overlay-card">
-          <strong id="mode-indicator">Browse</strong>
-          <span id="mode-detail">Select a feature or switch to place mode.</span>
-        </div>
-      </div>
-
-      <aside id="settings-panel" class="settings-panel hidden">
-        <div class="settings-header">
-          <div>
-            <h2>Settings</h2>
-          </div>
-          <button id="close-settings" class="secondary" type="button">Close</button>
-        </div>
-        <div id="settings-content" class="settings-content"></div>
       </aside>
-    </main>
 
-    <aside class="panel">
-      <div id="detail-panel" class="panel-scroll">
-        <div class="drawer-empty">
-          Select a track or place on the map, or switch to place mode and click on the map to capture a new point.
+      <main class="panel map-panel">
+        <div id="map"></div>
+        <div class="map-overlay">
+          <div class="overlay-card">
+            <strong id="viewport-summary">Loading map…</strong>
+            <span id="viewport-detail">Move the map to load places and tracks.</span>
+          </div>
+          <div class="overlay-card">
+            <strong id="mode-indicator">Browse</strong>
+            <span id="mode-detail">Select a feature or switch to place mode.</span>
+          </div>
         </div>
-      </div>
-    </aside>
-  </div>
+      </main>
+
+      <aside class="panel">
+        <div id="detail-panel" class="panel-scroll">
+          <div class="drawer-empty">
+            Select a track or place on the map, or switch to place mode and click on the map to capture a new point.
+          </div>
+        </div>
+      </aside>
+    </div>
+  </section>
+
+  <section id="settings-screen" class="app-screen hidden">
+    <div class="settings-shell">
+      <aside class="panel settings-sidebar">
+        <div class="panel-scroll">
+          <div class="settings-screen-header">
+            <div class="brand-title">
+              <h1>Map Settings</h1>
+              <span class="pill">PMTiles</span>
+            </div>
+            <button id="close-settings" class="secondary" type="button">Back To Map</button>
+          </div>
+          <div id="settings-content" class="settings-content settings-content-screen"></div>
+        </div>
+      </aside>
+
+      <main class="panel map-panel settings-map-panel">
+        <div id="settings-map"></div>
+        <div class="map-overlay">
+          <div class="overlay-card">
+            <strong>Extract Area</strong>
+            <span id="settings-map-detail">Use this map to define regional PMTiles chunks.</span>
+          </div>
+        </div>
+      </main>
+    </div>
+  </section>
 `;
 
+const workspaceScreen = must<HTMLElement>("#workspace-screen");
+const settingsScreen = must<HTMLElement>("#settings-screen");
 const detailPanel = must<HTMLDivElement>("#detail-panel");
 const importForm = must<HTMLFormElement>("#import-form");
 const gpxFileInput = must<HTMLInputElement>("#gpx-file");
@@ -298,8 +319,8 @@ const toggleAddPlaceButton = must<HTMLButtonElement>("#toggle-add-place");
 const refreshMapButton = must<HTMLButtonElement>("#refresh-map");
 const openSettingsButton = must<HTMLButtonElement>("#open-settings");
 const closeSettingsButton = must<HTMLButtonElement>("#close-settings");
-const settingsPanel = must<HTMLDivElement>("#settings-panel");
 const settingsContent = must<HTMLDivElement>("#settings-content");
+const settingsMapDetail = must<HTMLSpanElement>("#settings-map-detail");
 const viewportSummary = must<HTMLSpanElement>("#viewport-summary");
 const viewportDetail = must<HTMLSpanElement>("#viewport-detail");
 const modeIndicator = must<HTMLSpanElement>("#mode-indicator");
@@ -319,15 +340,17 @@ const defaultStyle: StyleSpecification = {
   ],
 };
 
-let map: Map;
+let workspaceMap: Map;
+let settingsMap: Map | null = null;
 let collections: CollectionRecord[] = [];
 let lastData: MapObjectsResponse = { places: [], tracks: [] };
 let addPlaceMode = false;
 let pendingPlace: PendingPlaceState | null = null;
 let areaSelectionMode = false;
 let areaSelection: AreaSelectionState = { start: null, end: null };
+let currentView: ViewMode = getViewFromLocation();
+
 const settingsState: SettingsState = {
-  isOpen: false,
   isBusy: false,
   builds: [],
   chunks: [],
@@ -348,26 +371,21 @@ void bootstrap();
 async function bootstrap(): Promise<void> {
   const basemap = await applyBasemapConfig();
 
-  map = new maplibregl.Map({
+  workspaceMap = new maplibregl.Map({
     container: "map",
     style: basemap.style_url ?? defaultStyle,
     center: [153.0251, -27.4698],
     zoom: 3,
   });
-  map.addControl(new maplibregl.NavigationControl(), "top-right");
-  map.on("load", () => {
-    ensureOverlayLayers();
-    updateSelectionSource();
+  workspaceMap.addControl(new maplibregl.NavigationControl(), "top-right");
+  workspaceMap.on("load", () => {
+    ensureWorkspaceOverlayLayers();
     void refreshMapData();
   });
-  map.on("moveend", () => {
+  workspaceMap.on("moveend", () => {
     void refreshMapData();
   });
-  map.on("click", (event) => {
-    if (areaSelectionMode) {
-      handleAreaSelectionClick(event.lngLat.lng, event.lngLat.lat);
-      return;
-    }
+  workspaceMap.on("click", (event) => {
     if (addPlaceMode) {
       openPlaceDrawer({
         latitude: Number(event.lngLat.lat.toFixed(6)),
@@ -378,6 +396,7 @@ async function bootstrap(): Promise<void> {
 
   wireEventHandlers();
   await refreshCollections();
+  await renderView(false);
 }
 
 function wireEventHandlers(): void {
@@ -432,8 +451,6 @@ function wireEventHandlers(): void {
   });
 
   toggleAddPlaceButton.addEventListener("click", () => {
-    areaSelectionMode = false;
-    clearAreaSelection();
     addPlaceMode = !addPlaceMode;
     pendingPlace = null;
     updateModeUi();
@@ -449,14 +466,95 @@ function wireEventHandlers(): void {
   });
 
   openSettingsButton.addEventListener("click", async () => {
-    settingsState.isOpen = true;
-    settingsPanel.classList.remove("hidden");
-    await refreshSettingsData();
+    await navigateTo("settings");
   });
 
-  closeSettingsButton.addEventListener("click", () => {
-    settingsState.isOpen = false;
-    settingsPanel.classList.add("hidden");
+  closeSettingsButton.addEventListener("click", async () => {
+    await navigateTo("workspace");
+  });
+
+  window.addEventListener("popstate", () => {
+    void handlePopState();
+  });
+}
+
+async function handlePopState(): Promise<void> {
+  const view = getViewFromLocation();
+  currentView = view;
+  await renderView(false);
+}
+
+async function navigateTo(view: ViewMode): Promise<void> {
+  if (view === currentView) {
+    return;
+  }
+
+  currentView = view;
+  const targetPath = view === "settings" ? "/settings" : "/";
+  window.history.pushState({}, "", targetPath);
+  await renderView(false);
+}
+
+function getViewFromLocation(): ViewMode {
+  return window.location.pathname === "/settings" ? "settings" : "workspace";
+}
+
+async function renderView(syncHistory: boolean): Promise<void> {
+  if (syncHistory) {
+    const targetPath = currentView === "settings" ? "/settings" : "/";
+    window.history.replaceState({}, "", targetPath);
+  }
+
+  workspaceScreen.classList.toggle("hidden", currentView !== "workspace");
+  settingsScreen.classList.toggle("hidden", currentView !== "settings");
+
+  if (currentView === "settings") {
+    addPlaceMode = false;
+    updateModeUi();
+    await refreshSettingsData();
+    await ensureSettingsMap();
+    syncSettingsMapToWorkspace();
+    settingsMap?.resize();
+    updateSelectionSource();
+    updateSettingsMapDetail();
+  } else {
+    workspaceMap.resize();
+  }
+}
+
+async function ensureSettingsMap(): Promise<void> {
+  if (settingsMap) {
+    return;
+  }
+
+  const basemap = await fetchJson<BasemapConfig>("/api/basemap");
+  settingsMap = new maplibregl.Map({
+    container: "settings-map",
+    style: basemap.style_url ?? defaultStyle,
+    center: workspaceMap.getCenter(),
+    zoom: workspaceMap.getZoom(),
+  });
+  settingsMap.addControl(new maplibregl.NavigationControl(), "top-right");
+  settingsMap.on("load", () => {
+    ensureSettingsMapLayers();
+    updateSelectionSource();
+    updateSettingsMapDetail();
+  });
+  settingsMap.on("click", (event) => {
+    if (!areaSelectionMode) {
+      return;
+    }
+    handleAreaSelectionClick(event.lngLat.lng, event.lngLat.lat);
+  });
+}
+
+function syncSettingsMapToWorkspace(): void {
+  if (!settingsMap) {
+    return;
+  }
+  settingsMap.jumpTo({
+    center: workspaceMap.getCenter(),
+    zoom: workspaceMap.getZoom(),
   });
 }
 
@@ -486,11 +584,11 @@ function renderCollections(): void {
 }
 
 async function refreshMapData(): Promise<void> {
-  if (!map || !map.isStyleLoaded()) {
+  if (!workspaceMap || !workspaceMap.isStyleLoaded()) {
     return;
   }
 
-  const bounds = map.getBounds();
+  const bounds = workspaceMap.getBounds();
   const params = new URLSearchParams({
     min_lat: String(bounds.getSouth()),
     min_lon: String(bounds.getWest()),
@@ -505,35 +603,28 @@ async function refreshMapData(): Promise<void> {
   if (filters.endsBefore) params.set("ends_before", new Date(filters.endsBefore).toISOString());
 
   lastData = await fetchJson<MapObjectsResponse>(`/api/map-objects?${params.toString()}`);
-  updateOverlaySources();
+  updateWorkspaceOverlaySources();
   viewportSummary.textContent = `${lastData.tracks.length} tracks · ${lastData.places.length} places`;
   viewportDetail.textContent = describeBounds(bounds.toArray() as LngLatBoundsLike);
 }
 
-function ensureOverlayLayers(): void {
-  if (!map.getSource("places")) {
-    map.addSource("places", {
+function ensureWorkspaceOverlayLayers(): void {
+  if (!workspaceMap.getSource("places")) {
+    workspaceMap.addSource("places", {
       type: "geojson",
       data: emptyFeatureCollection(),
     });
   }
 
-  if (!map.getSource("tracks")) {
-    map.addSource("tracks", {
+  if (!workspaceMap.getSource("tracks")) {
+    workspaceMap.addSource("tracks", {
       type: "geojson",
       data: emptyFeatureCollection(),
     });
   }
 
-  if (!map.getSource("selection-box")) {
-    map.addSource("selection-box", {
-      type: "geojson",
-      data: emptyFeatureCollection(),
-    });
-  }
-
-  if (!map.getLayer("tracks-line")) {
-    map.addLayer({
+  if (!workspaceMap.getLayer("tracks-line")) {
+    workspaceMap.addLayer({
       id: "tracks-line",
       type: "line",
       source: "tracks",
@@ -543,7 +634,7 @@ function ensureOverlayLayers(): void {
         "line-opacity": 0.9,
       },
     });
-    map.on("click", "tracks-line", (event) => {
+    workspaceMap.on("click", "tracks-line", (event) => {
       const feature = event.features?.[0];
       if (!feature) return;
       const trackId = String(feature.properties?.id ?? "");
@@ -554,8 +645,8 @@ function ensureOverlayLayers(): void {
     });
   }
 
-  if (!map.getLayer("places-circle")) {
-    map.addLayer({
+  if (!workspaceMap.getLayer("places-circle")) {
+    workspaceMap.addLayer({
       id: "places-circle",
       type: "circle",
       source: "places",
@@ -566,7 +657,7 @@ function ensureOverlayLayers(): void {
         "circle-stroke-color": "#fcfbf8",
       },
     });
-    map.on("click", "places-circle", (event) => {
+    workspaceMap.on("click", "places-circle", (event) => {
       const feature = event.features?.[0];
       if (!feature) return;
       const placeId = String(feature.properties?.id ?? "");
@@ -576,9 +667,22 @@ function ensureOverlayLayers(): void {
       }
     });
   }
+}
 
-  if (!map.getLayer("selection-fill")) {
-    map.addLayer({
+function ensureSettingsMapLayers(): void {
+  if (!settingsMap) {
+    return;
+  }
+
+  if (!settingsMap.getSource("selection-box")) {
+    settingsMap.addSource("selection-box", {
+      type: "geojson",
+      data: emptyFeatureCollection(),
+    });
+  }
+
+  if (!settingsMap.getLayer("selection-fill")) {
+    settingsMap.addLayer({
       id: "selection-fill",
       type: "fill",
       source: "selection-box",
@@ -589,8 +693,8 @@ function ensureOverlayLayers(): void {
     });
   }
 
-  if (!map.getLayer("selection-outline")) {
-    map.addLayer({
+  if (!settingsMap.getLayer("selection-outline")) {
+    settingsMap.addLayer({
       id: "selection-outline",
       type: "line",
       source: "selection-box",
@@ -603,9 +707,9 @@ function ensureOverlayLayers(): void {
   }
 }
 
-function updateOverlaySources(): void {
-  const trackSource = map.getSource("tracks");
-  const placeSource = map.getSource("places");
+function updateWorkspaceOverlaySources(): void {
+  const trackSource = workspaceMap.getSource("tracks");
+  const placeSource = workspaceMap.getSource("places");
   if (trackSource?.type === "geojson") {
     trackSource.setData(buildTrackFeatureCollection(lastData.tracks));
   }
@@ -663,8 +767,6 @@ function renderPlaceDetail(place: PlaceRecord): void {
 function openPlaceDrawer(place: PendingPlaceState): void {
   pendingPlace = place;
   addPlaceMode = true;
-  areaSelectionMode = false;
-  clearAreaSelection();
   updateModeUi();
   detailPanel.innerHTML = `
     <form id="place-form" class="drawer-card">
@@ -756,10 +858,6 @@ function openPlaceDrawer(place: PendingPlaceState): void {
 }
 
 async function refreshSettingsData(): Promise<void> {
-  if (!settingsState.isOpen) {
-    return;
-  }
-
   settingsState.isBusy = true;
   renderSettings();
   const [builds, local, jobs] = await Promise.all([
@@ -777,10 +875,6 @@ async function refreshSettingsData(): Promise<void> {
 }
 
 function renderSettings(): void {
-  if (!settingsState.isOpen) {
-    return;
-  }
-
   const staleCount = settingsState.chunks.filter((chunk) => chunk.stale).length;
   settingsContent.innerHTML = `
     <section class="settings-section">
@@ -805,7 +899,13 @@ function renderSettings(): void {
         <button id="rebuild-stale" class="secondary" type="button" ${settingsState.isBusy || staleCount === 0 ? "disabled" : ""}>Rebuild stale</button>
       </div>
       <div class="status ${staleCount ? "warn" : ""}">
-        ${settingsState.isBusy ? "Working…" : staleCount ? `${staleCount} chunks are stale for ${escapeHtml(settingsState.selectedBuildKey || "the selected build")}.` : "Managed PMTiles are current for the selected build."}
+        ${
+          settingsState.isBusy
+            ? "Working…"
+            : staleCount
+              ? `${staleCount} chunks are stale for ${escapeHtml(settingsState.selectedBuildKey || "the selected build")}.`
+              : "Managed PMTiles are current for the selected build."
+        }
       </div>
     </section>
 
@@ -822,6 +922,7 @@ function renderSettings(): void {
         </label>
         <div class="inline-actions">
           <button id="select-area" class="secondary" type="button">${areaSelectionMode ? "Area mode on" : "Select area"}</button>
+          <button id="clear-area" class="secondary" type="button" ${!areaSelection.start ? "disabled" : ""}>Clear</button>
           <button id="create-area-extract" type="button" ${!hasCompleteAreaSelection() || !settingsState.selectedBuildKey ? "disabled" : ""}>Create extract</button>
         </div>
         <div class="status">
@@ -870,6 +971,7 @@ function wireSettingsPanel(): void {
   const worldTo6Button = settingsContent.querySelector<HTMLButtonElement>("#world-to-6");
   const rebuildStaleButton = settingsContent.querySelector<HTMLButtonElement>("#rebuild-stale");
   const selectAreaButton = settingsContent.querySelector<HTMLButtonElement>("#select-area");
+  const clearAreaButton = settingsContent.querySelector<HTMLButtonElement>("#clear-area");
   const createAreaExtractButton = settingsContent.querySelector<HTMLButtonElement>("#create-area-extract");
   const activeLayersForm = settingsContent.querySelector<HTMLFormElement>("#active-layers-form");
 
@@ -903,12 +1005,15 @@ function wireSettingsPanel(): void {
   });
 
   selectAreaButton?.addEventListener("click", () => {
-    addPlaceMode = false;
     areaSelectionMode = !areaSelectionMode;
-    if (!areaSelectionMode) {
-      clearAreaSelection();
-    }
-    updateModeUi();
+    updateSettingsMapDetail();
+    renderSettings();
+  });
+
+  clearAreaButton?.addEventListener("click", () => {
+    areaSelectionMode = false;
+    clearAreaSelection();
+    updateSettingsMapDetail();
     renderSettings();
   });
 
@@ -918,6 +1023,7 @@ function wireSettingsPanel(): void {
     const maxZoomInput = settingsContent.querySelector<HTMLInputElement>("#area-max-zoom");
     const bounds = normalizedAreaBounds();
     if (!bounds) return;
+
     await runManagedMapsAction(async () => {
       await postJson("/api/settings/maps/area-extract", {
         build_key: settingsState.selectedBuildKey,
@@ -931,7 +1037,7 @@ function wireSettingsPanel(): void {
       await waitForMapJobs();
       areaSelectionMode = false;
       clearAreaSelection();
-      updateModeUi();
+      updateSettingsMapDetail();
     });
   });
 
@@ -957,7 +1063,6 @@ function wireSettingsPanel(): void {
         selected_build_key: settingsState.selectedBuildKey,
         layers,
       });
-      await refreshBasemapStyle();
     });
   });
 }
@@ -976,9 +1081,7 @@ async function waitForMapJobs(): Promise<void> {
     const jobs = await fetchJson<MapsJobsResponse>("/api/settings/maps/jobs");
     settingsState.jobs = jobs.jobs.slice(0, 8);
     renderSettings();
-    if (
-      jobs.jobs.every((job) => job.status !== "queued" && job.status !== "running")
-    ) {
+    if (jobs.jobs.every((job) => job.status !== "queued" && job.status !== "running")) {
       return;
     }
     await delay(250);
@@ -990,21 +1093,19 @@ function handleAreaSelectionClick(lng: number, lat: number): void {
   if (!areaSelection.start) {
     areaSelection.start = { lng, lat };
     areaSelection.end = null;
-    updateDrawerMessage("Select the opposite corner for the PMTiles extract.");
   } else {
     areaSelection.end = { lng, lat };
-    updateDrawerMessage("Area selected. Set the extract details in Settings and create the chunk.");
   }
   updateSelectionSource();
+  updateSettingsMapDetail();
   renderSettings();
-  updateModeUi();
 }
 
 function updateSelectionSource(): void {
-  if (!map || !map.getSource("selection-box")) {
+  if (!settingsMap || !settingsMap.getSource("selection-box")) {
     return;
   }
-  const source = map.getSource("selection-box");
+  const source = settingsMap.getSource("selection-box");
   if (source?.type === "geojson") {
     source.setData(buildSelectionFeatureCollection());
   }
@@ -1065,12 +1166,20 @@ function hasCompleteAreaSelection(): boolean {
 function describeAreaSelection(): string {
   const bounds = normalizedAreaBounds();
   if (!areaSelection.start) {
-    return "Choose Select area, then click two corners on the map to define a regional PMTiles extract.";
+    return "Enable Select area, then click two corners on the settings map to define a regional PMTiles extract.";
   }
   if (!bounds) {
-    return "First corner captured. Click the opposite corner on the map.";
+    return "First corner captured. Click the opposite corner on the settings map.";
   }
   return `${bounds.minLat.toFixed(3)}, ${bounds.minLon.toFixed(3)} → ${bounds.maxLat.toFixed(3)}, ${bounds.maxLon.toFixed(3)}`;
+}
+
+function updateSettingsMapDetail(): void {
+  settingsMapDetail.textContent = areaSelectionMode
+    ? areaSelection.start
+      ? "Click the opposite corner to finish the extract box."
+      : "Click a first corner on the map to start the extract box."
+    : "Use this map to define regional PMTiles chunks.";
 }
 
 function renderChunkEditor(chunk: MapsChunkRecord, selectedBuildKey: string): string {
@@ -1122,13 +1231,6 @@ function describeChunkBounds(chunk: MapsChunkRecord): string {
 function updateModeUi(): void {
   toggleAddPlaceButton.classList.toggle("active", addPlaceMode);
   toggleAddPlaceButton.textContent = addPlaceMode ? "Place mode on" : "Add place";
-  if (areaSelectionMode) {
-    modeIndicator.textContent = "Area extract";
-    modeDetail.textContent = areaSelection.start
-      ? "Click the opposite corner to finish the PMTiles extract box."
-      : "Click a first corner on the map for the PMTiles extract box.";
-    return;
-  }
   modeIndicator.textContent = addPlaceMode ? "Place mode" : "Browse";
   modeDetail.textContent = addPlaceMode
     ? "Click on the map to drop a new point of interest."
@@ -1195,18 +1297,30 @@ async function applyBasemapConfig(): Promise<BasemapConfig> {
 
 async function refreshBasemapStyle(): Promise<void> {
   const basemap = await applyBasemapConfig();
-  if (!map) {
-    return;
+  await setMapStyle(workspaceMap, basemap.style_url ?? defaultStyle, "workspace");
+  if (settingsMap) {
+    await setMapStyle(settingsMap, basemap.style_url ?? defaultStyle, "settings");
   }
+}
 
-  map.setStyle(basemap.style_url ?? defaultStyle);
-  map.once("styledata", () => {
-    if (!map.isStyleLoaded()) {
-      return;
-    }
-    ensureOverlayLayers();
-    updateSelectionSource();
-    void refreshMapData();
+async function setMapStyle(
+  mapInstance: Map,
+  style: string | StyleSpecification,
+  kind: "workspace" | "settings",
+): Promise<void> {
+  await new Promise<void>((resolve) => {
+    mapInstance.once("styledata", () => {
+      if (kind === "workspace") {
+        ensureWorkspaceOverlayLayers();
+        void refreshMapData();
+      } else {
+        ensureSettingsMapLayers();
+        updateSelectionSource();
+        updateSettingsMapDetail();
+      }
+      resolve();
+    });
+    mapInstance.setStyle(style);
   });
 }
 
@@ -1283,13 +1397,6 @@ function escapeHtml(value: string): string {
     .replaceAll(">", "&gt;")
     .replaceAll('"', "&quot;")
     .replaceAll("'", "&#39;");
-}
-
-function formatBytes(bytes: number): string {
-  if (bytes < 1024) return `${bytes} B`;
-  if (bytes < 1024 ** 2) return `${(bytes / 1024).toFixed(1)} KB`;
-  if (bytes < 1024 ** 3) return `${(bytes / 1024 ** 2).toFixed(1)} MB`;
-  return `${(bytes / 1024 ** 3).toFixed(1)} GB`;
 }
 
 function delay(ms: number): Promise<void> {
