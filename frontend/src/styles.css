@@ -385,6 +385,31 @@ button.secondary.active {
   color: var(--muted);
 }
 
+.settings-stats {
+  display: grid;
+  gap: 10px;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.stat-card {
+  display: grid;
+  gap: 4px;
+  padding: 12px 14px;
+  border-radius: 16px;
+  border: 1px solid var(--line);
+  background: rgba(255, 255, 255, 0.7);
+}
+
+.stat-card strong {
+  font-size: 1.4rem;
+  letter-spacing: -0.04em;
+}
+
+.stat-card span {
+  color: var(--muted);
+  font-size: 0.85rem;
+}
+
 .chunk-card,
 .job-row {
   display: grid;
@@ -396,6 +421,13 @@ button.secondary.active {
 }
 
 .chunk-card-header {
+  display: flex;
+  align-items: start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.job-row-header {
   display: flex;
   align-items: start;
   justify-content: space-between;
@@ -416,10 +448,62 @@ button.secondary.active {
   font-weight: 700;
 }
 
+.state-pill {
+  display: inline-flex;
+  align-items: center;
+  padding: 5px 9px;
+  border-radius: 999px;
+  font-weight: 700;
+  font-size: 0.76rem;
+}
+
+.state-pill.ready {
+  background: rgba(46, 119, 100, 0.12);
+  color: var(--green);
+}
+
+.state-pill.running {
+  background: rgba(187, 95, 58, 0.14);
+  color: var(--accent-dark);
+}
+
+.state-pill.stale,
+.state-pill.failed {
+  background: rgba(140, 69, 39, 0.12);
+  color: var(--accent-dark);
+}
+
+.state-pill.pending {
+  background: rgba(35, 53, 48, 0.08);
+  color: var(--ink);
+}
+
 .chunk-card-bounds {
   align-self: end;
   color: var(--muted);
   font-size: 0.85rem;
+}
+
+.progress-copy {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  color: var(--muted);
+  font-size: 0.84rem;
+}
+
+.progress-bar {
+  height: 10px;
+  border-radius: 999px;
+  overflow: hidden;
+  background: rgba(35, 53, 48, 0.08);
+}
+
+.progress-fill {
+  height: 100%;
+  border-radius: inherit;
+  background: linear-gradient(90deg, var(--accent) 0%, var(--green) 100%);
 }
 
 .toggle {
@@ -465,5 +549,15 @@ button.secondary.active {
 
   .panel-scroll {
     max-height: 32vh;
+  }
+
+  .settings-stats {
+    grid-template-columns: 1fr;
+  }
+
+  .progress-copy,
+  .job-row-header {
+    align-items: start;
+    flex-direction: column;
   }
 }

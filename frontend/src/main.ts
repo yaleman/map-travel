@@ -109,6 +109,8 @@ interface MapsChunkRecord {
   enabled: boolean;
   display_order: number;
   stale: boolean;
+  selected_build_ready: boolean;
+  latest_job: MapsJobRecord | null;
   archives: MapsArchiveRecord[];
 }
 
@@ -125,6 +127,10 @@ interface MapsJobRecord {
   chunk_id: string | null;
   archive_id: string | null;
   error_message: string | null;
+  current_step: string;
+  progress_percent: number;
+  segments_done: number;
+  segments_total: number;
   created_at: string;
   updated_at: string;
   started_at: string | null;
@@ -349,6 +355,7 @@ let pendingPlace: PendingPlaceState | null = null;
 let areaSelectionMode = false;
 let areaSelection: AreaSelectionState = { start: null, end: null };
 let currentView: ViewMode = getViewFromLocation();
+let settingsRefreshTimer: number | null = null;
 
 const settingsState: SettingsState = {
   isBusy: false,
@@ -518,6 +525,7 @@ async function renderView(syncHistory: boolean): Promise<void> {
     updateSelectionSource();
     updateSettingsMapDetail();
   } else {
+    clearSettingsRefreshTimer();
     workspaceMap.resize();
   }
 }
@@ -857,9 +865,11 @@ function openPlaceDrawer(place: PendingPlaceState): void {
   });
 }
 
-async function refreshSettingsData(): Promise<void> {
-  settingsState.isBusy = true;
-  renderSettings();
+async function refreshSettingsData(showBusy = true): Promise<void> {
+  if (showBusy) {
+    settingsState.isBusy = true;
+    renderSettings();
+  }
   const [builds, local, jobs] = await Promise.all([
     fetchJson<MapsBuildsResponse>("/api/settings/maps/builds"),
     fetchJson<MapsLocalResponse>("/api/settings/maps/local"),
@@ -870,12 +880,42 @@ async function refreshSettingsData(): Promise<void> {
   settingsState.jobs = jobs.jobs.slice(0, 8);
   settingsState.selectedBuildKey =
     local.selected_build_key ?? builds.selected_build_key ?? builds.builds[0]?.key ?? "";
-  settingsState.isBusy = false;
+  if (showBusy) {
+    settingsState.isBusy = false;
+  }
   renderSettings();
+  scheduleSettingsRefresh();
+}
+
+function clearSettingsRefreshTimer(): void {
+  if (settingsRefreshTimer !== null) {
+    window.clearTimeout(settingsRefreshTimer);
+    settingsRefreshTimer = null;
+  }
+}
+
+function hasActiveMapJobs(): boolean {
+  return settingsState.jobs.some((job) => job.status === "queued" || job.status === "running");
+}
+
+function scheduleSettingsRefresh(): void {
+  clearSettingsRefreshTimer();
+  if (currentView !== "settings" || !hasActiveMapJobs()) {
+    return;
+  }
+  settingsRefreshTimer = window.setTimeout(() => {
+    void refreshSettingsData(false).catch((error: unknown) => {
+      console.error("Could not refresh map settings", error);
+    });
+  }, 1000);
 }
 
 function renderSettings(): void {
   const staleCount = settingsState.chunks.filter((chunk) => chunk.stale).length;
+  const activeJobCount = settingsState.jobs.filter((job) =>
+    job.status === "queued" || job.status === "running",
+  ).length;
+  const readyChunkCount = settingsState.chunks.filter((chunk) => chunk.selected_build_ready).length;
   settingsContent.innerHTML = `
     <section class="settings-section">
       <div class="settings-row">
@@ -906,6 +946,20 @@ function renderSettings(): void {
               ? `${staleCount} chunks are stale for ${escapeHtml(settingsState.selectedBuildKey || "the selected build")}.`
               : "Managed PMTiles are current for the selected build."
         }
+      </div>
+      <div class="settings-stats">
+        <div class="stat-card">
+          <strong>${activeJobCount}</strong>
+          <span>Active jobs</span>
+        </div>
+        <div class="stat-card">
+          <strong>${readyChunkCount}</strong>
+          <span>Ready chunks</span>
+        </div>
+        <div class="stat-card">
+          <strong>${staleCount}</strong>
+          <span>Stale chunks</span>
+        </div>
       </div>
     </section>
 
@@ -948,14 +1002,7 @@ function renderSettings(): void {
       <div class="field-grid">
         ${settingsState.jobs.length
           ? settingsState.jobs
-              .map(
-                (job) => `
-                  <div class="job-row">
-                    <strong>${escapeHtml(job.kind)}</strong>
-                    <span>${escapeHtml(job.status)} · ${escapeHtml(job.build_key)}</span>
-                    ${job.error_message ? `<span class="job-error">${escapeHtml(job.error_message)}</span>` : ""}
-                  </div>`,
-              )
+              .map((job) => renderJobRow(job))
               .join("")
           : `<div class="drawer-empty">No map jobs yet.</div>`}
       </div>
@@ -1070,18 +1117,19 @@ function wireSettingsPanel(): void {
 async function runManagedMapsAction(action: () => Promise<void>): Promise<void> {
   settingsState.isBusy = true;
   renderSettings();
-  await action();
-  settingsState.isBusy = false;
+  try {
+    await action();
+  } finally {
+    settingsState.isBusy = false;
+  }
   await refreshSettingsData();
   await refreshBasemapStyle();
 }
 
 async function waitForMapJobs(): Promise<void> {
   for (let attempt = 0; attempt < 200; attempt += 1) {
-    const jobs = await fetchJson<MapsJobsResponse>("/api/settings/maps/jobs");
-    settingsState.jobs = jobs.jobs.slice(0, 8);
-    renderSettings();
-    if (jobs.jobs.every((job) => job.status !== "queued" && job.status !== "running")) {
+    await refreshSettingsData(false);
+    if (!hasActiveMapJobs()) {
       return;
     }
     await delay(250);
@@ -1182,11 +1230,145 @@ function updateSettingsMapDetail(): void {
     : "Use this map to define regional PMTiles chunks.";
 }
 
+function renderJobRow(job: MapsJobRecord): string {
+  const chunk = job.chunk_id
+    ? settingsState.chunks.find((candidate) => candidate.id === job.chunk_id)
+    : null;
+  const jobLabel = chunk ? chunk.label : job.kind;
+  const segmentSummary =
+    job.segments_total > 0 ? `${job.segments_done} / ${job.segments_total} segments` : "Preparing segments";
+
+  return `
+    <div class="job-row">
+      <div class="job-row-header">
+        <div>
+          <strong>${escapeHtml(jobLabel)}</strong>
+          <div class="chunk-card-meta">
+            <span>${escapeHtml(job.kind)}</span>
+            <span>${escapeHtml(job.build_key)}</span>
+            <span class="state-pill ${jobStatusClass(job)}">${escapeHtml(jobStatusLabel(job))}</span>
+          </div>
+        </div>
+        <strong>${job.progress_percent}%</strong>
+      </div>
+      <div class="progress-copy">
+        <span>${escapeHtml(job.current_step)}</span>
+        <span>${escapeHtml(segmentSummary)}</span>
+      </div>
+      ${renderProgressBar(job.progress_percent)}
+      <div class="chunk-card-meta">
+        <span>Updated ${formatTimestamp(job.updated_at)}</span>
+        ${
+          job.finished_at
+            ? `<span>Finished ${escapeHtml(formatTimestamp(job.finished_at))}</span>`
+            : ""
+        }
+      </div>
+      ${job.error_message ? `<div class="job-error">${escapeHtml(job.error_message)}</div>` : ""}
+    </div>
+  `;
+}
+
+function renderProgressBar(percent: number): string {
+  const safePercent = Math.max(0, Math.min(100, percent));
+  return `
+    <div class="progress-bar" aria-hidden="true">
+      <div class="progress-fill" style="width: ${safePercent}%"></div>
+    </div>
+  `;
+}
+
+function jobStatusLabel(job: MapsJobRecord): string {
+  if (job.status === "running") {
+    return "Running";
+  }
+  if (job.status === "queued") {
+    return "Queued";
+  }
+  if (job.status === "failed") {
+    return "Failed";
+  }
+  if (job.status === "completed") {
+    return "Completed";
+  }
+  return job.status;
+}
+
+function jobStatusClass(job: MapsJobRecord): string {
+  if (job.status === "completed") {
+    return "ready";
+  }
+  if (job.status === "failed") {
+    return "failed";
+  }
+  if (job.status === "queued" || job.status === "running") {
+    return "running";
+  }
+  return "pending";
+}
+
+function describeChunkState(chunk: MapsChunkRecord): {
+  label: string;
+  className: string;
+} {
+  const latestJob = chunk.latest_job;
+  if (latestJob && (latestJob.status === "queued" || latestJob.status === "running")) {
+    return {
+      label: `${latestJob.current_step} · ${latestJob.progress_percent}%`,
+      className: "running",
+    };
+  }
+  if (latestJob?.status === "failed") {
+    return {
+      label: "Latest build failed",
+      className: "failed",
+    };
+  }
+  if (chunk.selected_build_ready) {
+    return {
+      label: "Ready for selected build",
+      className: "ready",
+    };
+  }
+  if (chunk.stale) {
+    return {
+      label: "Stale for selected build",
+      className: "stale",
+    };
+  }
+  return {
+    label: "Not downloaded for selected build",
+    className: "pending",
+  };
+}
+
+function formatTimestamp(value: string): string {
+  return new Date(value).toLocaleString();
+}
+
 function renderChunkEditor(chunk: MapsChunkRecord, selectedBuildKey: string): string {
   const selectedArchive = chunk.archives.find((archive) => archive.build_key === selectedBuildKey);
+  const state = describeChunkState(chunk);
   const archiveSummary = selectedArchive
     ? `${selectedArchive.tile_type.toUpperCase()} · z${selectedArchive.min_zoom}-${selectedArchive.max_zoom}`
     : "No materialized archive for this build";
+  const archiveCountLabel = `${chunk.archives.length} archive${chunk.archives.length === 1 ? "" : "s"}`;
+  const latestJob = chunk.latest_job;
+  const progressMarkup = latestJob
+    ? `
+        <div class="field-grid">
+          <div class="progress-copy">
+            <span>${escapeHtml(latestJob.current_step)}</span>
+            <span>${
+              latestJob.segments_total > 0
+                ? `${latestJob.segments_done} / ${latestJob.segments_total} segments`
+                : "Waiting for segment scan"
+            }</span>
+          </div>
+          ${renderProgressBar(latestJob.progress_percent)}
+        </div>
+      `
+    : "";
   return `
     <div class="chunk-card" data-chunk-id="${chunk.id}">
       <div class="chunk-card-header">
@@ -1195,7 +1377,8 @@ function renderChunkEditor(chunk: MapsChunkRecord, selectedBuildKey: string): st
           <div class="chunk-card-meta">
             <span>${escapeHtml(chunk.kind)}</span>
             <span>${escapeHtml(archiveSummary)}</span>
-            ${chunk.stale ? `<span class="chunk-stale">stale</span>` : ""}
+            <span>${escapeHtml(archiveCountLabel)}</span>
+            <span class="state-pill ${state.className}">${escapeHtml(state.label)}</span>
           </div>
         </div>
         <label class="toggle">
@@ -1203,6 +1386,7 @@ function renderChunkEditor(chunk: MapsChunkRecord, selectedBuildKey: string): st
           <span>Active</span>
         </label>
       </div>
+      ${progressMarkup}
       <div class="settings-row">
         <label>
           Order
@@ -1212,6 +1396,11 @@ function renderChunkEditor(chunk: MapsChunkRecord, selectedBuildKey: string): st
           ${describeChunkBounds(chunk)}
         </div>
       </div>
+      ${
+        latestJob?.error_message
+          ? `<div class="job-error">${escapeHtml(latestJob.error_message)}</div>`
+          : ""
+      }
     </div>
   `;
 }

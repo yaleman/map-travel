@@ -22,6 +22,7 @@ use sea_orm_migration::prelude::*;
 
 mod m20260422_000001_create_core_tables;
 mod m20260422_000002_create_managed_maps_tables;
+mod m20260422_000003_add_map_job_progress_fields;
 
 pub use sea_orm_migration::MigratorTrait;
 
@@ -33,6 +34,7 @@ impl MigratorTrait for Migrator {
         vec![
             Box::new(m20260422_000001_create_core_tables::Migration),
             Box::new(m20260422_000002_create_managed_maps_tables::Migration),
+            Box::new(m20260422_000003_add_map_job_progress_fields::Migration),
         ]
     }
 }

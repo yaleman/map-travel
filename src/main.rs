@@ -23,7 +23,7 @@ use map_travel::{AppConfig, AppContext, build_router};
 use std::{net::SocketAddr, path::PathBuf, process::ExitCode};
 use tokio::net::TcpListener;
 use tower_http::services::{ServeDir, ServeFile};
-use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
+use tracing_subscriber::{EnvFilter, filter::LevelFilter, layer::SubscriberExt, util::SubscriberInitExt};
 
 #[derive(Parser, Debug)]
 #[command(author, version, about)]
@@ -79,7 +79,12 @@ struct Cli {
 
 #[tokio::main]
 async fn main() -> Result<ExitCode, ExitCode> {
+    let env_filter = build_env_filter().map_err(|error| {
+        eprintln!("Failed to build tracing filter: {error}");
+        ExitCode::FAILURE
+    })?;
     tracing_subscriber::registry()
+        .with(env_filter)
         .with(tracing_subscriber::fmt::layer())
         .init();
 
@@ -117,4 +122,14 @@ async fn main() -> Result<ExitCode, ExitCode> {
         ExitCode::FAILURE
     })?;
     Ok(ExitCode::SUCCESS)
+}
+
+fn build_env_filter() -> Result<EnvFilter, tracing_subscriber::filter::ParseError> {
+    let hyper_util_directive = "hyper_util=info".parse()?;
+    Ok(
+        EnvFilter::builder()
+            .with_default_directive(LevelFilter::INFO.into())
+            .from_env_lossy()
+            .add_directive(hyper_util_directive),
+    )
 }

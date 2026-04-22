@@ -1,7 +1,8 @@
 use std::{
     collections::HashMap,
-    path::{Path, PathBuf},
+    path::PathBuf,
     sync::Arc,
+    time::Instant,
 };
 
 use bytes::Bytes;
@@ -78,6 +79,8 @@ pub struct ChunkRecord {
     pub enabled: bool,
     pub display_order: i32,
     pub stale: bool,
+    pub selected_build_ready: bool,
+    pub latest_job: Option<JobRecord>,
     pub archives: Vec<ArchiveRecord>,
 }
 
@@ -110,6 +113,10 @@ pub struct JobRecord {
     pub chunk_id: Option<String>,
     pub archive_id: Option<String>,
     pub error_message: Option<String>,
+    pub current_step: String,
+    pub progress_percent: i32,
+    pub segments_done: i32,
+    pub segments_total: i32,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
     pub started_at: Option<DateTime<Utc>>,
@@ -226,6 +233,10 @@ impl MapsService {
             .all(&self.db)
             .await?;
         let archives = map_archive::Entity::find().all(&self.db).await?;
+        let jobs = map_job::Entity::find()
+            .order_by_desc(map_job::Column::CreatedAt)
+            .all(&self.db)
+            .await?;
 
         let mut archives_by_chunk = HashMap::<String, Vec<map_archive::Model>>::new();
         for archive in archives {
@@ -234,12 +245,29 @@ impl MapsService {
                 .or_default()
                 .push(archive);
         }
+        let mut latest_job_by_chunk = HashMap::<String, JobRecord>::new();
+        for job in jobs {
+            let Some(chunk_id) = &job.chunk_id else {
+                continue;
+            };
+            if let Some(selected_build_key) = &selected_build_key
+                && &job.build_key != selected_build_key
+            {
+                continue;
+            }
+            latest_job_by_chunk
+                .entry(chunk_id.clone())
+                .or_insert_with(|| JobRecord::from(job));
+        }
 
         let chunks = chunks
             .into_iter()
             .map(|chunk| {
                 let archives = archives_by_chunk.remove(&chunk.id).unwrap_or_default();
                 let has_any_archive = !archives.is_empty();
+                let selected_build_ready = selected_build_key.as_ref().is_some_and(|build_key| {
+                    archives.iter().any(|archive| archive.build_key == *build_key)
+                });
                 let stale = selected_build_key.as_ref().is_some_and(|build_key| {
                     has_any_archive
                         && !archives
@@ -247,6 +275,7 @@ impl MapsService {
                             .any(|archive| archive.build_key == *build_key)
                 });
                 ChunkRecord {
+                    latest_job: latest_job_by_chunk.remove(&chunk.id),
                     id: chunk.id,
                     label: chunk.label,
                     kind: chunk.kind,
@@ -258,6 +287,7 @@ impl MapsService {
                     enabled: chunk.enabled,
                     display_order: chunk.display_order,
                     stale,
+                    selected_build_ready,
                     archives: archives.into_iter().map(ArchiveRecord::from).collect(),
                 }
             })
@@ -573,7 +603,9 @@ impl MapsService {
     fn spawn_job(&self, job_id: String) {
         let service = self.clone();
         tokio::spawn(async move {
-            let _ = service.run_job(&job_id).await;
+            if let Err(error) = service.run_job(&job_id).await {
+                tracing::error!(job_id = %job_id, error = %error, "managed map job crashed");
+            }
         });
     }
 
@@ -584,10 +616,24 @@ impl MapsService {
         else {
             return Ok(());
         };
+        let log_job_id = job.id.clone();
+        let log_job_kind = job.kind.clone();
+        let log_build_key = job.build_key.clone();
+        let log_chunk_id = job.chunk_id.clone();
+        let started = Instant::now();
+        tracing::info!(
+            job_id = %log_job_id,
+            kind = %log_job_kind,
+            build_key = %log_build_key,
+            chunk_id = ?log_chunk_id,
+            "starting managed map job"
+        );
 
         let now = Utc::now();
         let mut active_job: map_job::ActiveModel = job.into();
         active_job.status = Set("running".to_owned());
+        active_job.current_step = Set("Preparing extract".to_owned());
+        active_job.progress_percent = Set(1);
         active_job.started_at = Set(Some(now));
         active_job.updated_at = Set(now);
         let job = active_job.update(&self.db).await?;
@@ -597,13 +643,31 @@ impl MapsService {
         let mut final_job: map_job::ActiveModel = job.into();
         match result {
             Ok(archive_id) => {
+                tracing::info!(
+                    job_id = %log_job_id,
+                    archive_id = %archive_id,
+                    elapsed_ms = started.elapsed().as_millis(),
+                    "managed map job completed"
+                );
                 final_job.status = Set("completed".to_owned());
                 final_job.archive_id = Set(Some(archive_id));
                 final_job.error_message = Set(None);
+                final_job.current_step = Set("Completed".to_owned());
+                final_job.progress_percent = Set(100);
             }
             Err(error) => {
+                tracing::error!(
+                    job_id = %log_job_id,
+                    kind = %log_job_kind,
+                    build_key = %log_build_key,
+                    chunk_id = ?log_chunk_id,
+                    elapsed_ms = started.elapsed().as_millis(),
+                    error = %error,
+                    "managed map job failed"
+                );
                 final_job.status = Set("failed".to_owned());
                 final_job.error_message = Set(Some(error.to_string()));
+                final_job.current_step = Set("Failed".to_owned());
             }
         }
         final_job.finished_at = Set(Some(finished_at));
@@ -613,6 +677,7 @@ impl MapsService {
     }
 
     async fn materialize_job(&self, job: &map_job::Model) -> AppResult<String> {
+        let started = Instant::now();
         let chunk_id = job
             .chunk_id
             .clone()
@@ -621,11 +686,21 @@ impl MapsService {
             .one(&self.db)
             .await?
             .ok_or_else(|| AppError::Internal("map chunk should exist for job".to_owned()))?;
+        let log_chunk_id = chunk.id.clone();
+        let log_chunk_label = chunk.label.clone();
 
         let source_url = format!(
             "{}/{}",
             self.config.protomaps_builds_base_url.trim_end_matches('/'),
             job.build_key
+        );
+        tracing::info!(
+            job_id = %job.id,
+            chunk_id = %log_chunk_id,
+            chunk_label = %log_chunk_label,
+            build_key = %job.build_key,
+            source_url = %source_url,
+            "opening remote PMTiles archive"
         );
         let reader =
             AsyncPmTilesReader::<HttpBackend>::new_with_url(self.client.clone(), source_url)
@@ -647,33 +722,115 @@ impl MapsService {
             })?;
         }
 
-        let metadata = reader
-            .get_metadata()
-            .await
-            .unwrap_or_else(|_| "{}".to_owned());
+        let metadata = match reader.get_metadata().await {
+            Ok(metadata) => metadata,
+            Err(error) => {
+                tracing::warn!(
+                    job_id = %job.id,
+                    chunk_id = %log_chunk_id,
+                    build_key = %job.build_key,
+                    error = %error,
+                    "could not read remote PMTiles metadata, using empty metadata object"
+                );
+                "{}".to_owned()
+            }
+        };
         let (min_lon, min_lat, max_lon, max_lat) = bounds_for_chunk(&chunk);
         let center_lon = (min_lon + max_lon) / 2.0;
         let center_lat = (min_lat + max_lat) / 2.0;
         let max_zoom = u8::try_from(chunk.max_zoom).map_err(|error| {
             AppError::Internal(format!("invalid max zoom stored in chunk: {error}"))
         })?;
+        let segments_total = i32::try_from(coords.len()).map_err(|error| {
+            AppError::Internal(format!("too many tile segments in job: {error}"))
+        })?;
+        tracing::info!(
+            job_id = %job.id,
+            chunk_id = %log_chunk_id,
+            chunk_label = %log_chunk_label,
+            build_key = %job.build_key,
+            tile_type = %tile_type_name(remote_header.tile_type),
+            min_zoom = remote_header.min_zoom,
+            max_zoom = chunk.max_zoom,
+            segments_total,
+            bounds = %format!("{min_lat:.4},{min_lon:.4} -> {max_lat:.4},{max_lon:.4}"),
+            output_path = %relative_path,
+            "computed managed map extract plan"
+        );
+        self.update_job_progress(
+            &job.id,
+            "Downloading tiles",
+            5,
+            0,
+            segments_total,
+        )
+        .await?;
         let mut tiles = Vec::new();
         let mut found_any_tiles = false;
-        for coord in coords {
+        let total_coords = coords.len();
+        for (index, coord) in coords.into_iter().enumerate() {
             if let Some(tile) = reader.get_tile(coord).await.map_err(|error| {
                 AppError::Internal(format!("could not read remote PMTiles tile: {error}"))
             })? {
                 tiles.push((coord, tile));
                 found_any_tiles = true;
             }
+            let done = index + 1;
+            if should_emit_progress(done, total_coords) {
+                let progress_percent = percent_for_range(done, total_coords, 5, 80);
+                let segments_done = i32::try_from(done).map_err(|error| {
+                    AppError::Internal(format!("tile segment progress overflowed: {error}"))
+                })?;
+                self.update_job_progress(
+                    &job.id,
+                    "Downloading tiles",
+                    progress_percent,
+                    segments_done,
+                    segments_total,
+                )
+                .await?;
+                tracing::debug!(
+                    job_id = %job.id,
+                    chunk_id = %log_chunk_id,
+                    build_key = %job.build_key,
+                    progress_percent,
+                    segments_done,
+                    segments_total,
+                    "managed map download progress"
+                );
+            }
         }
 
         if !found_any_tiles {
+            tracing::warn!(
+                job_id = %job.id,
+                chunk_id = %log_chunk_id,
+                build_key = %job.build_key,
+                bounds = %format!("{min_lat:.4},{min_lon:.4} -> {max_lat:.4},{max_lon:.4}"),
+                max_zoom = chunk.max_zoom,
+                "managed map extract produced no tiles"
+            );
             return Err(AppError::InvalidRequest(
                 "selected area did not produce any tiles".to_owned(),
             ));
         }
 
+        self.update_job_progress(
+            &job.id,
+            "Writing local archive",
+            85,
+            segments_total,
+            segments_total,
+        )
+        .await?;
+        tracing::info!(
+            job_id = %job.id,
+            chunk_id = %log_chunk_id,
+            build_key = %job.build_key,
+            tiles_found = tiles.len(),
+            output_path = %relative_path,
+            "writing managed PMTiles archive"
+        );
         {
             let file = std::fs::File::create(&absolute_path).map_err(|error| {
                 AppError::Internal(format!("could not create archive file: {error}"))
@@ -700,6 +857,14 @@ impl MapsService {
                 AppError::Internal(format!("could not finalize PMTiles archive: {error}"))
             })?;
         }
+        self.update_job_progress(
+            &job.id,
+            "Indexing archive",
+            95,
+            segments_total,
+            segments_total,
+        )
+        .await?;
         let file_size_bytes = i64::try_from(
             tokio::fs::metadata(&absolute_path)
                 .await
@@ -709,6 +874,15 @@ impl MapsService {
                 .len(),
         )
         .map_err(|error| AppError::Internal(format!("archive file size was too large: {error}")))?;
+        tracing::info!(
+            job_id = %job.id,
+            chunk_id = %log_chunk_id,
+            build_key = %job.build_key,
+            output_path = %relative_path,
+            file_size_bytes,
+            elapsed_ms = started.elapsed().as_millis(),
+            "managed PMTiles archive written"
+        );
 
         let local_reader = Arc::new(
             AsyncPmTilesReader::new_with_path(&absolute_path)
@@ -761,6 +935,18 @@ impl MapsService {
             .insert(&self.db)
             .await?
         };
+
+        tracing::info!(
+            job_id = %job.id,
+            chunk_id = %log_chunk_id,
+            build_key = %job.build_key,
+            archive_id = %archive.id,
+            tile_type = %tile_type_name(header.tile_type),
+            min_zoom = header.min_zoom,
+            max_zoom = header.max_zoom,
+            elapsed_ms = started.elapsed().as_millis(),
+            "managed PMTiles archive indexed"
+        );
 
         Ok(archive.id)
     }
@@ -840,6 +1026,10 @@ impl MapsService {
             chunk_id: Set(chunk_id),
             archive_id: Set(None),
             error_message: Set(None),
+            current_step: Set("Queued".to_owned()),
+            progress_percent: Set(0),
+            segments_done: Set(0),
+            segments_total: Set(0),
             created_at: Set(now),
             updated_at: Set(now),
             started_at: Set(None),
@@ -848,6 +1038,32 @@ impl MapsService {
         .insert(&self.db)
         .await
         .map_err(Into::into)
+    }
+
+    async fn update_job_progress(
+        &self,
+        job_id: &str,
+        current_step: &str,
+        progress_percent: i32,
+        segments_done: i32,
+        segments_total: i32,
+    ) -> AppResult<()> {
+        let Some(job) = map_job::Entity::find_by_id(job_id.to_owned())
+            .one(&self.db)
+            .await?
+        else {
+            return Ok(());
+        };
+
+        let now = Utc::now();
+        let mut model: map_job::ActiveModel = job.into();
+        model.current_step = Set(current_step.to_owned());
+        model.progress_percent = Set(progress_percent.clamp(0, 100));
+        model.segments_done = Set(segments_done.max(0));
+        model.segments_total = Set(segments_total.max(0));
+        model.updated_at = Set(now);
+        model.update(&self.db).await?;
+        Ok(())
     }
 
     async fn ensure_selected_build_key(&self, build_key: &str) -> AppResult<()> {
@@ -1105,6 +1321,18 @@ where
     [min_lon, min_lat, max_lon, max_lat]
 }
 
+fn should_emit_progress(done: usize, total: usize) -> bool {
+    done == total || done <= 10 || done % 25 == 0
+}
+
+fn percent_for_range(done: usize, total: usize, start: i32, end: i32) -> i32 {
+    if total == 0 {
+        return start;
+    }
+    let span = end - start;
+    start + ((done as f64 / total as f64) * f64::from(span)).round() as i32
+}
+
 impl From<protomaps_build::Model> for BuildRecord {
     fn from(model: protomaps_build::Model) -> Self {
         Self {
@@ -1146,6 +1374,10 @@ impl From<map_job::Model> for JobRecord {
             chunk_id: model.chunk_id,
             archive_id: model.archive_id,
             error_message: model.error_message,
+            current_step: model.current_step,
+            progress_percent: model.progress_percent,
+            segments_done: model.segments_done,
+            segments_total: model.segments_total,
             created_at: model.created_at,
             updated_at: model.updated_at,
             started_at: model.started_at,
@@ -1154,18 +1386,6 @@ impl From<map_job::Model> for JobRecord {
     }
 }
 
-pub fn derive_managed_maps_dir(database_url: &str) -> Option<PathBuf> {
-    if database_url == "sqlite::memory:" {
-        return None;
-    }
-    let without_query = database_url.split('?').next()?;
-    let raw_path = without_query
-        .strip_prefix("sqlite://")
-        .or_else(|| without_query.strip_prefix("sqlite:"))?;
-    if raw_path.is_empty() || raw_path == ":memory:" {
-        return None;
-    }
-    let path = Path::new(raw_path);
-    let parent = path.parent().unwrap_or_else(|| Path::new("."));
-    Some(parent.join("map-travel-managed-maps"))
+pub fn derive_managed_maps_dir(_database_url: &str) -> Option<PathBuf> {
+    Some(PathBuf::from("maps"))
 }

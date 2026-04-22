@@ -399,6 +399,37 @@ async fn materializes_world_and_area_chunks_then_rebuilds_them_for_a_new_selecte
             .len(),
         2
     );
+    assert!(
+        local_before_activation_payload["chunks"]
+            .as_array()
+            .expect("chunks should be an array")
+            .iter()
+            .all(|chunk| chunk["latest_job"].is_object())
+    );
+
+    let jobs_after_initial_download = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/api/settings/maps/jobs")
+                .body(Body::empty())
+                .expect("jobs request should build"),
+        )
+        .await
+        .expect("jobs request should succeed");
+    let jobs_after_initial_download_payload = json_response(jobs_after_initial_download).await;
+    assert!(
+        jobs_after_initial_download_payload["jobs"]
+            .as_array()
+            .expect("jobs should be an array")
+            .iter()
+            .all(|job| {
+                job["progress_percent"].as_i64() == Some(100)
+                    && job["segments_total"].as_i64().unwrap_or_default() > 0
+                    && job["segments_done"] == job["segments_total"]
+                    && job["current_step"].as_str() == Some("Completed")
+            })
+    );
 
     let active_layers_response = post_json(
         &router,
@@ -517,6 +548,10 @@ async fn materializes_world_and_area_chunks_then_rebuilds_them_for_a_new_selecte
         !chunk["stale"]
             .as_bool()
             .expect("stale flag should exist after rebuild")
+    }));
+    assert!(rebuilt_chunks.iter().all(|chunk| {
+        chunk["selected_build_ready"].as_bool() == Some(true)
+            && chunk["latest_job"]["progress_percent"].as_i64() == Some(100)
     }));
 
     let rebuilt_region_tile_response = router

@@ -60,6 +60,7 @@ cargo run
 ```
 
 By default the app listens on `127.0.0.1:3000` and uses `map-travel.sqlite` in the repo root.
+Managed PMTiles downloads are stored in `maps/` in the repo root unless overridden.
 
 ## Environment Variables
 
@@ -69,6 +70,8 @@ By default the app listens on `127.0.0.1:3000` and uses `map-travel.sqlite` in t
   - default: `127.0.0.1:3000`
 - `MAP_TRAVEL_PMTILES_PATH`: optional path to a PMTiles archive
 - `MAP_TRAVEL_PMTILES_STYLE_PATH`: optional path to a MapLibre style JSON file for vector PMTiles archives
+- `MAP_TRAVEL_MANAGED_MAPS_DIR`: optional override for the managed PMTiles download/cache directory
+  - default: `maps/`
 
 ### PMTiles Notes
 
