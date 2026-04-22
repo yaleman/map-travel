@@ -546,12 +546,13 @@ async fn get_basemap_tile(
 }
 
 fn place_condition(query: &MapObjectsQuery) -> AppResult<Condition> {
-    if let Some(object_type) = query.object_type.as_deref() {
-        if object_type != "place" && object_type != "track" {
-            return Err(AppError::InvalidRequest(format!(
-                "unsupported object_type `{object_type}`"
-            )));
-        }
+    if let Some(object_type) = query.object_type.as_deref()
+        && object_type != "place"
+        && object_type != "track"
+    {
+        return Err(AppError::InvalidRequest(format!(
+            "unsupported object_type `{object_type}`"
+        )));
     }
 
     let mut condition = Condition::all()

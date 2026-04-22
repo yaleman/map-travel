@@ -3,6 +3,7 @@
 `map-travel` is a Rust-backed, browser-based travel mapping app.
 
 It currently supports:
+
 - bootstrapping a local SQLite database on first run
 - generating a stable local owner ID with no login flow
 - importing GPX tracks

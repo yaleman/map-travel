@@ -1,3 +1,30 @@
 [tools]
 biome = "latest"
 pnpm = "latest"
+
+
+[tasks.frontend-build]
+run = "pnpm --dir frontend build"
+
+[tasks.rust-build]
+run = "cargo build"
+
+[tasks.build]
+depends = ["frontend-build", "rust-build"]
+
+
+[tasks.clippy]
+run = "cargo clippy --all-targets --all-features -- -D warnings"
+
+[tasks.rust-check]
+run = "cargo check --all-targets --all-features"
+
+[tasks.rust-test]
+run = "cargo test --all-targets --all-features"
+
+[tasks.check]
+depends = ["clippy", "rust-check", "rust-test"]
+
+[tasks.start]
+depends = ["frontend-build"]
+run = "cargo run"
