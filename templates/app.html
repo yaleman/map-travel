@@ -1,0 +1,168 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Map Travel</title>
+    {% if let Some(stylesheet_href) = stylesheet_href %}
+    <link rel="stylesheet" crossorigin href="{{ stylesheet_href }}" />
+    {% endif %}
+    <script type="module" crossorigin src="{{ script_src }}"></script>
+  </head>
+  <body>
+    <section id="workspace-screen" class="app-screen">
+      <div class="shell">
+        <aside class="panel">
+          <div class="panel-scroll">
+            <div class="brand">
+              <div class="brand-title">
+                <h1>Map Travel</h1>
+                <span class="pill">v1</span>
+              </div>
+              <button id="open-settings" class="secondary" type="button">Settings</button>
+            </div>
+
+            <section class="section">
+              <h2>Tracks</h2>
+              <form id="import-form" class="field-grid">
+                <label>
+                  GPX file
+                  <input
+                    id="gpx-file"
+                    name="file"
+                    type="file"
+                    accept=".gpx,application/gpx+xml,text/xml,application/xml"
+                    required
+                  />
+                </label>
+                <button type="submit">Import GPX</button>
+              </form>
+            </section>
+
+            <section class="section">
+              <h2>Basemap</h2>
+              <div id="basemap-status" class="status">Checking PMTiles…</div>
+            </section>
+
+            <section class="section">
+              <h2>Filters</h2>
+              <div class="field-grid">
+                <label>
+                  Type
+                  <select id="filter-object-type">
+                    <option value="">All</option>
+                    <option value="place">Places</option>
+                    <option value="track">Tracks</option>
+                  </select>
+                </label>
+                <label>
+                  Collection
+                  <select id="filter-collection">
+                    <option value="">All</option>
+                  </select>
+                </label>
+                <label>
+                  Tag
+                  <input id="filter-tag" type="text" placeholder="future" />
+                </label>
+                <div class="field-grid two-up">
+                  <label>
+                    Starts after
+                    <input id="filter-starts-after" type="datetime-local" />
+                  </label>
+                  <label>
+                    Ends before
+                    <input id="filter-ends-before" type="datetime-local" />
+                  </label>
+                </div>
+              </div>
+            </section>
+
+            <section class="section">
+              <h2>Collections</h2>
+              <form id="collection-form" class="field-grid">
+                <label>
+                  Name
+                  <input
+                    id="collection-name"
+                    type="text"
+                    placeholder="South Island Walks"
+                    required
+                  />
+                </label>
+                <label>
+                  Kind
+                  <select id="collection-kind">
+                    <option value="trip">Trip</option>
+                    <option value="future">Future</option>
+                    <option value="past">Past</option>
+                    <option value="general">General</option>
+                  </select>
+                </label>
+                <button type="submit">Create collection</button>
+              </form>
+              <div id="collection-list" class="collection-list section-space"></div>
+            </section>
+
+            <section class="section">
+              <h2>Places</h2>
+              <div class="inline-actions">
+                <button id="toggle-add-place" class="secondary" type="button">Add place</button>
+                <button id="refresh-map" class="secondary" type="button">Refresh</button>
+              </div>
+            </section>
+          </div>
+        </aside>
+
+        <main class="panel map-panel">
+          <div id="map"></div>
+          <a
+            id="open-google-maps"
+            class="map-corner-chip"
+            href="https://www.google.com/maps"
+            target="_blank"
+            rel="noreferrer"
+          >
+            G
+          </a>
+        </main>
+
+        <aside class="panel">
+          <div id="detail-panel" class="panel-scroll">
+            <div class="drawer-empty">
+              Select a track or place on the map, or switch to place mode and click on the map to
+              capture a new point.
+            </div>
+          </div>
+        </aside>
+      </div>
+    </section>
+
+    <section id="settings-screen" class="app-screen hidden">
+      <div class="settings-shell">
+        <aside class="panel settings-sidebar">
+          <div class="panel-scroll">
+            <div class="settings-screen-header">
+              <div class="brand-title">
+                <h1>Map Settings</h1>
+                <span class="pill">PMTiles</span>
+              </div>
+              <button id="close-settings" class="secondary" type="button">Back To Map</button>
+            </div>
+            <div id="settings-content" class="settings-content settings-content-screen"></div>
+          </div>
+        </aside>
+
+        <main class="panel map-panel settings-map-panel">
+          <div id="settings-map"></div>
+          <div class="map-overlay">
+            <div class="overlay-card">
+              <strong>Extract Area</strong>
+              <span id="settings-map-detail">Use this map to define regional PMTiles chunks.</span>
+            </div>
+          </div>
+        </main>
+      </div>
+    </section>
+  </body>
+</html>

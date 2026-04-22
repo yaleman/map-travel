@@ -20,6 +20,10 @@ test("updates the fragment on viewport changes and keeps hidden tracks in the ob
 	page,
 }) => {
 	await page.goto("/");
+	await expect(page.locator("#open-google-maps")).toHaveAttribute(
+		"href",
+		"https://www.google.com/maps/@-27.46980,153.02510,3.00z",
+	);
 
 	const canvas = page.locator("#map canvas");
 	await expect(canvas).toBeVisible();
@@ -40,6 +44,14 @@ test("updates the fragment on viewport changes and keeps hidden tracks in the ob
 			timeout: 2_000,
 		})
 		.toMatch(/^#map=-?\d+\.\d+,-?\d+\.\d+,\d+\.\d+$/);
+	await expect
+		.poll(
+			() => page.locator("#open-google-maps").getAttribute("href"),
+			{ timeout: 2_000 },
+		)
+		.toMatch(
+			/^https:\/\/www\.google\.com\/maps\/@-?\d+\.\d+,-?\d+\.\d+,\d+\.\d+z$/,
+		);
 
 	await page.locator("#gpx-file").setInputFiles({
 		name: "hideable-track.gpx",
@@ -77,4 +89,30 @@ test("updates the fragment on viewport changes and keeps hidden tracks in the ob
 	await expect(
 		detailPanel.getByRole("button", { name: /Hideable Track/ }),
 	).toBeVisible();
+});
+
+test("restores the viewport from the fragment on reload", async ({
+	page,
+	request,
+}) => {
+	const createPlaceResponse = await request.post("/api/places", {
+		data: {
+			name: "Sydney Harbour",
+			category: "city",
+			notes: "Viewport restore target",
+			latitude: -33.8688,
+			longitude: 151.2093,
+			visit_start: null,
+			visit_end: null,
+			collection_ids: [],
+			tag_names: [],
+		},
+	});
+	expect(createPlaceResponse.ok()).toBeTruthy();
+
+	await page.goto("/#map=-33.86880,151.20930,12.00");
+	await page.reload();
+	await page.getByRole("button", { name: "Refresh" }).click();
+
+	await expect(page.locator("#detail-panel")).toContainText("Sydney Harbour");
 });

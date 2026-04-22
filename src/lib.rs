@@ -24,6 +24,8 @@ mod error;
 pub mod http_logging;
 mod maps;
 mod maps_api;
+mod ui;
 
 pub use api::build_router;
 pub use app::{AppConfig, AppContext};
+pub use ui::build_router as build_ui_router;

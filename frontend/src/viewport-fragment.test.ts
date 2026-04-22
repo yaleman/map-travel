@@ -1,8 +1,10 @@
 import { describe, expect, test, vi } from "vitest";
 
 import {
+	buildViewUrl,
 	createDebouncedViewportFragmentUpdater,
 	formatViewportFragment,
+	parseViewportFragment,
 	writeViewportFragment,
 } from "./viewport-fragment";
 
@@ -40,6 +42,34 @@ describe("writeViewportFragment", () => {
 			"",
 			"/settings?foo=bar#map=-27.46980,153.02510,9.50",
 		);
+	});
+});
+
+describe("parseViewportFragment", () => {
+	test("parses a valid map fragment into a viewport state", () => {
+		expect(parseViewportFragment("#map=-27.46980,153.02510,9.50")).toEqual({
+			latitude: -27.4698,
+			longitude: 153.0251,
+			zoom: 9.5,
+		});
+	});
+
+	test("rejects invalid fragments", () => {
+		expect(parseViewportFragment("#wat=1,2,3")).toBeNull();
+		expect(parseViewportFragment("#map=200,153.02510,9.50")).toBeNull();
+		expect(parseViewportFragment("#map=-27.46980,nope,9.50")).toBeNull();
+	});
+});
+
+describe("buildViewUrl", () => {
+	test("preserves the active fragment when switching screens", () => {
+		expect(
+			buildViewUrl("/settings", {
+				pathname: "/",
+				search: "?foo=bar",
+				hash: "#map=-27.46980,153.02510,9.50",
+			}),
+		).toBe("/settings?foo=bar#map=-27.46980,153.02510,9.50");
 	});
 });
 

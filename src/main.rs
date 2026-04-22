@@ -19,10 +19,12 @@
 
 use axum::{Router, middleware};
 use clap::Parser;
-use map_travel::{AppConfig, AppContext, build_router, http_logging::log_http_request};
+use map_travel::{
+    AppConfig, AppContext, build_router, build_ui_router, http_logging::log_http_request,
+};
 use std::{net::SocketAddr, path::PathBuf, process::ExitCode};
 use tokio::net::TcpListener;
-use tower_http::services::{ServeDir, ServeFile};
+use tower_http::services::ServeDir;
 use tracing_subscriber::{
     EnvFilter, filter::LevelFilter, layer::SubscriberExt, util::SubscriberInitExt,
 };
@@ -108,10 +110,8 @@ async fn main() -> Result<ExitCode, ExitCode> {
         ExitCode::FAILURE
     })?);
     let app: Router = build_router(context.clone())
-        .fallback_service(
-            ServeDir::new("frontend/dist")
-                .not_found_service(ServeFile::new("frontend/dist/index.html")),
-        )
+        .merge(build_ui_router())
+        .fallback_service(ServeDir::new("frontend/dist"))
         .layer(middleware::from_fn(log_http_request));
     let listener = TcpListener::bind(context.config().listen_addr)
         .await

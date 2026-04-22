@@ -284,7 +284,9 @@ async fn delete_place(
         .ok_or_else(|| AppError::InvalidRequest("place does not exist".to_owned()))?;
 
     delete_object_links(&transaction, "place", &place_id).await?;
-    place::Entity::delete_by_id(place_id).exec(&transaction).await?;
+    place::Entity::delete_by_id(place_id)
+        .exec(&transaction)
+        .await?;
     transaction.commit().await?;
 
     Ok(StatusCode::NO_CONTENT)
@@ -532,17 +534,15 @@ async fn delete_track(
     }
 
     delete_object_links(&transaction, "track", &track_id).await?;
-    track::Entity::delete_by_id(track_id).exec(&transaction).await?;
+    track::Entity::delete_by_id(track_id)
+        .exec(&transaction)
+        .await?;
     transaction.commit().await?;
 
     Ok(StatusCode::NO_CONTENT)
 }
 
-async fn delete_object_links<C>(
-    connection: &C,
-    object_type: &str,
-    object_id: &str,
-) -> AppResult<()>
+async fn delete_object_links<C>(connection: &C, object_type: &str, object_id: &str) -> AppResult<()>
 where
     C: sea_orm::ConnectionTrait,
 {

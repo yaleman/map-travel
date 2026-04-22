@@ -9,7 +9,7 @@ use serde_json::{Value, json};
 use tempfile::TempDir;
 use tower::util::ServiceExt;
 
-use map_travel::{AppConfig, AppContext, build_router};
+use map_travel::{AppConfig, AppContext, build_router, build_ui_router};
 
 const SAMPLE_GPX: &str = r#"<?xml version="1.0" encoding="UTF-8"?>
 <gpx version="1.1" creator="map-travel-test" xmlns="http://www.topografix.com/GPX/1/1">
@@ -35,6 +35,16 @@ async fn json_response(response: axum::response::Response) -> Value {
         .expect("response body should collect")
         .to_bytes();
     serde_json::from_slice(&bytes).expect("response should be valid JSON")
+}
+
+async fn text_response(response: axum::response::Response) -> String {
+    let bytes = response
+        .into_body()
+        .collect()
+        .await
+        .expect("response body should collect")
+        .to_bytes();
+    String::from_utf8(bytes.to_vec()).expect("response should be valid UTF-8")
 }
 
 fn multipart_request(filename: &str, content_type: &str, body: &str) -> Request<Body> {
@@ -92,6 +102,33 @@ async fn bootstrap_creates_and_reuses_owner_id_for_same_database() {
 
     assert_eq!(first_owner_id, second_context.owner_id());
     assert!(!second_context.owner_id().is_empty());
+}
+
+#[tokio::test]
+async fn serves_the_app_shell_from_askama_templates() {
+    let router = build_ui_router();
+
+    for path in ["/", "/settings"] {
+        let response = router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri(path)
+                    .body(Body::empty())
+                    .expect("ui request should build"),
+            )
+            .await
+            .expect("ui request should succeed");
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = text_response(response).await;
+        assert!(body.contains("<section id=\"workspace-screen\""));
+        assert!(body.contains("<section id=\"settings-screen\""));
+        assert!(body.contains("Map Travel"));
+        assert!(
+            body.contains("/src/main.ts") || body.contains("/assets/"),
+            "expected a frontend entrypoint in the rendered shell: {body}"
+        );
+    }
 }
 
 #[tokio::test]

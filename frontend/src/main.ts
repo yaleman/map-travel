@@ -1,13 +1,15 @@
 import maplibregl, {
-	type LngLatBoundsLike,
 	type Map as MapGL,
 	type StyleSpecification,
 } from "maplibre-gl";
 import "maplibre-gl/dist/maplibre-gl.css";
+import { googleMapsViewportUrl } from "./google-maps-link";
 import { displayTrackColor } from "./track-display";
 import { filterVisibleTracks } from "./track-visibility";
 import {
+	buildViewUrl,
 	createDebouncedViewportFragmentUpdater,
+	parseViewportFragment,
 	writeViewportFragment,
 } from "./viewport-fragment";
 import { sortViewportObjectsByDistance } from "./viewport-objects";
@@ -175,158 +177,6 @@ interface SelectedMapObjectState {
 	objectType: ObjectType;
 }
 
-const app = document.querySelector<HTMLDivElement>("#app");
-
-if (!app) {
-	throw new Error("App container not found");
-}
-
-app.innerHTML = `
-  <section id="workspace-screen" class="app-screen">
-    <div class="shell">
-      <aside class="panel">
-        <div class="panel-scroll">
-          <div class="brand">
-            <div class="brand-title">
-              <h1>Map Travel</h1>
-              <span class="pill">v1</span>
-            </div>
-            <button id="open-settings" class="secondary" type="button">Settings</button>
-          </div>
-
-          <section class="section">
-            <h2>Tracks</h2>
-            <form id="import-form" class="field-grid">
-              <label>
-                GPX file
-                <input id="gpx-file" name="file" type="file" accept=".gpx,application/gpx+xml,text/xml,application/xml" required />
-              </label>
-              <button type="submit">Import GPX</button>
-            </form>
-          </section>
-
-          <section class="section">
-            <h2>Basemap</h2>
-            <div id="basemap-status" class="status">Checking PMTiles…</div>
-          </section>
-
-          <section class="section">
-            <h2>Filters</h2>
-            <div class="field-grid">
-              <label>
-                Type
-                <select id="filter-object-type">
-                  <option value="">All</option>
-                  <option value="place">Places</option>
-                  <option value="track">Tracks</option>
-                </select>
-              </label>
-              <label>
-                Collection
-                <select id="filter-collection">
-                  <option value="">All</option>
-                </select>
-              </label>
-              <label>
-                Tag
-                <input id="filter-tag" type="text" placeholder="future" />
-              </label>
-              <div class="field-grid two-up">
-                <label>
-                  Starts after
-                  <input id="filter-starts-after" type="datetime-local" />
-                </label>
-                <label>
-                  Ends before
-                  <input id="filter-ends-before" type="datetime-local" />
-                </label>
-              </div>
-            </div>
-          </section>
-
-          <section class="section">
-            <h2>Collections</h2>
-            <form id="collection-form" class="field-grid">
-              <label>
-                Name
-                <input id="collection-name" type="text" placeholder="South Island Walks" required />
-              </label>
-              <label>
-                Kind
-                <select id="collection-kind">
-                  <option value="trip">Trip</option>
-                  <option value="future">Future</option>
-                  <option value="past">Past</option>
-                  <option value="general">General</option>
-                </select>
-              </label>
-              <button type="submit">Create collection</button>
-            </form>
-            <div id="collection-list" class="collection-list section-space"></div>
-          </section>
-
-          <section class="section">
-            <h2>Places</h2>
-            <div class="inline-actions">
-              <button id="toggle-add-place" class="secondary" type="button">Add place</button>
-              <button id="refresh-map" class="secondary" type="button">Refresh</button>
-            </div>
-          </section>
-        </div>
-      </aside>
-
-      <main class="panel map-panel">
-        <div id="map"></div>
-        <div class="map-overlay">
-          <div class="overlay-card">
-            <strong id="viewport-summary">Loading map…</strong>
-            <span id="viewport-detail">Move the map to load places and tracks.</span>
-          </div>
-          <div class="overlay-card">
-            <strong id="mode-indicator">Browse</strong>
-            <span id="mode-detail">Select a feature or switch to place mode.</span>
-          </div>
-        </div>
-      </main>
-
-      <aside class="panel">
-        <div id="detail-panel" class="panel-scroll">
-          <div class="drawer-empty">
-            Select a track or place on the map, or switch to place mode and click on the map to capture a new point.
-          </div>
-        </div>
-      </aside>
-    </div>
-  </section>
-
-  <section id="settings-screen" class="app-screen hidden">
-    <div class="settings-shell">
-      <aside class="panel settings-sidebar">
-        <div class="panel-scroll">
-          <div class="settings-screen-header">
-            <div class="brand-title">
-              <h1>Map Settings</h1>
-              <span class="pill">PMTiles</span>
-            </div>
-            <button id="close-settings" class="secondary" type="button">Back To Map</button>
-          </div>
-          <div id="settings-content" class="settings-content settings-content-screen"></div>
-        </div>
-      </aside>
-
-      <main class="panel map-panel settings-map-panel">
-        <div id="settings-map"></div>
-        <div class="map-overlay">
-          <div class="overlay-card">
-            <strong>Extract Area</strong>
-            <span id="settings-map-detail">Use this map to define regional PMTiles chunks.</span>
-          </div>
-        </div>
-      </main>
-    </div>
-  </section>
-`;
-
 const workspaceScreen = must<HTMLElement>("#workspace-screen");
 const settingsScreen = must<HTMLElement>("#settings-screen");
 const detailPanel = must<HTMLDivElement>("#detail-panel");
@@ -346,12 +196,9 @@ const toggleAddPlaceButton = must<HTMLButtonElement>("#toggle-add-place");
 const refreshMapButton = must<HTMLButtonElement>("#refresh-map");
 const openSettingsButton = must<HTMLButtonElement>("#open-settings");
 const closeSettingsButton = must<HTMLButtonElement>("#close-settings");
+const openGoogleMapsLink = must<HTMLAnchorElement>("#open-google-maps");
 const settingsContent = must<HTMLDivElement>("#settings-content");
 const settingsMapDetail = must<HTMLSpanElement>("#settings-map-detail");
-const viewportSummary = must<HTMLSpanElement>("#viewport-summary");
-const viewportDetail = must<HTMLSpanElement>("#viewport-detail");
-const modeIndicator = must<HTMLSpanElement>("#mode-indicator");
-const modeDetail = must<HTMLSpanElement>("#mode-detail");
 
 const defaultStyle: StyleSpecification = {
 	version: 8,
@@ -383,8 +230,10 @@ let selectedMapObject: SelectedMapObjectState | null = null;
 const hiddenTrackIds = new Set<string>();
 let currentView: ViewMode = getViewFromLocation();
 let settingsRefreshTimer: number | null = null;
-const scheduleViewportFragmentUpdate =
-	createDebouncedViewportFragmentUpdater(writeViewportFragment, 250);
+const scheduleViewportFragmentUpdate = createDebouncedViewportFragmentUpdater(
+	writeViewportFragment,
+	250,
+);
 
 const settingsState: SettingsState = {
 	isBusy: false,
@@ -406,13 +255,23 @@ void bootstrap();
 
 async function bootstrap(): Promise<void> {
 	const basemap = await applyBasemapConfig();
+	const initialViewport = parseViewportFragment(window.location.hash);
+	const initialWorkspaceViewport = initialViewport ?? {
+		latitude: -27.4698,
+		longitude: 153.0251,
+		zoom: 3,
+	};
 
 	workspaceMap = new maplibregl.Map({
 		container: "map",
 		style: basemap.style_url ?? defaultStyle,
-		center: [153.0251, -27.4698],
-		zoom: 3,
+		center: [
+			initialWorkspaceViewport.longitude,
+			initialWorkspaceViewport.latitude,
+		],
+		zoom: initialWorkspaceViewport.zoom,
 	});
+	updateGoogleMapsLink(initialWorkspaceViewport);
 	workspaceMap.addControl(new maplibregl.NavigationControl(), "top-right");
 	workspaceMap.on("load", () => {
 		ensureWorkspaceOverlayLayers();
@@ -422,11 +281,13 @@ async function bootstrap(): Promise<void> {
 		void refreshMapData();
 	});
 	workspaceMap.on("move", () => {
-		scheduleViewportFragmentUpdate({
+		const viewport = {
 			latitude: workspaceMap.getCenter().lat,
 			longitude: workspaceMap.getCenter().lng,
 			zoom: workspaceMap.getZoom(),
-		});
+		};
+		scheduleViewportFragmentUpdate(viewport);
+		updateGoogleMapsLink(viewport);
 	});
 	workspaceMap.on("click", (event) => {
 		if (addPlaceMode) {
@@ -448,6 +309,14 @@ async function bootstrap(): Promise<void> {
 	wireEventHandlers();
 	await refreshCollections();
 	await renderView(false);
+}
+
+function updateGoogleMapsLink(state: {
+	latitude: number;
+	longitude: number;
+	zoom: number;
+}): void {
+	openGoogleMapsLink.href = googleMapsViewportUrl(state);
 }
 
 function wireEventHandlers(): void {
@@ -541,8 +410,7 @@ async function navigateTo(view: ViewMode): Promise<void> {
 	}
 
 	currentView = view;
-	const targetPath = view === "settings" ? "/settings" : "/";
-	window.history.pushState({}, "", targetPath);
+	window.history.pushState({}, "", buildViewUrl(pathForView(view)));
 	await renderView(false);
 }
 
@@ -552,8 +420,7 @@ function getViewFromLocation(): ViewMode {
 
 async function renderView(syncHistory: boolean): Promise<void> {
 	if (syncHistory) {
-		const targetPath = currentView === "settings" ? "/settings" : "/";
-		window.history.replaceState({}, "", targetPath);
+		window.history.replaceState({}, "", buildViewUrl(pathForView(currentView)));
 	}
 
 	workspaceScreen.classList.toggle("hidden", currentView !== "workspace");
@@ -572,6 +439,10 @@ async function renderView(syncHistory: boolean): Promise<void> {
 		clearSettingsRefreshTimer();
 		workspaceMap.resize();
 	}
+}
+
+function pathForView(view: ViewMode): string {
+	return view === "settings" ? "/settings" : "/";
 }
 
 async function ensureSettingsMap(): Promise<void> {
@@ -663,10 +534,6 @@ async function refreshMapData(): Promise<void> {
 		`/api/map-objects?${params.toString()}`,
 	);
 	updateWorkspaceOverlaySources();
-	viewportSummary.textContent = `${lastData.tracks.length} tracks · ${lastData.places.length} places`;
-	viewportDetail.textContent = describeBounds(
-		bounds.toArray() as LngLatBoundsLike,
-	);
 	syncDrawerSelection();
 }
 
@@ -959,14 +826,18 @@ function syncDrawerSelection(): void {
 		return;
 	}
 	if (selectedMapObject.objectType === "track") {
-		const track = lastData.tracks.find((item) => item.id === selectedMapObject.id);
+		const track = lastData.tracks.find(
+			(item) => item.id === selectedMapObject.id,
+		);
 		if (track) {
 			renderTrackDetail(track);
 			return;
 		}
 	}
 	if (selectedMapObject.objectType === "place") {
-		const place = lastData.places.find((item) => item.id === selectedMapObject.id);
+		const place = lastData.places.find(
+			(item) => item.id === selectedMapObject.id,
+		);
 		if (place) {
 			renderPlaceDetail(place);
 			return;
@@ -1278,7 +1149,9 @@ function scheduleSettingsRefresh(): void {
 
 function renderSettings(): void {
 	const staleCount = settingsState.chunks.filter((chunk) => chunk.stale).length;
-	const activeJobCount = settingsState.jobs.filter((job) => isJobActive(job)).length;
+	const activeJobCount = settingsState.jobs.filter((job) =>
+		isJobActive(job),
+	).length;
 	const readyChunkCount = settingsState.chunks.filter(
 		(chunk) => chunk.selected_build_ready,
 	).length;
@@ -1529,8 +1402,9 @@ function syncAreaExtractUi(): void {
 		settingsContent.querySelector<HTMLButtonElement>("#clear-area");
 	const createAreaExtractButton =
 		settingsContent.querySelector<HTMLButtonElement>("#create-area-extract");
-	const areaSelectionStatus =
-		settingsContent.querySelector<HTMLDivElement>("#area-selection-status");
+	const areaSelectionStatus = settingsContent.querySelector<HTMLDivElement>(
+		"#area-selection-status",
+	);
 
 	if (selectAreaButton) {
 		selectAreaButton.textContent = areaSelectionMode
@@ -1926,10 +1800,6 @@ function updateModeUi(): void {
 	toggleAddPlaceButton.textContent = addPlaceMode
 		? "Place mode on"
 		: "Add place";
-	modeIndicator.textContent = addPlaceMode ? "Place mode" : "Browse";
-	modeDetail.textContent = addPlaceMode
-		? "Click on the map to drop a new point of interest."
-		: "Move, filter, and select tracks or places.";
 }
 
 function buildTrackFeatureCollection(
@@ -1973,11 +1843,6 @@ function emptyFeatureCollection(): GeoJSON.FeatureCollection {
 		type: "FeatureCollection",
 		features: [],
 	};
-}
-
-function describeBounds(bounds: LngLatBoundsLike): string {
-	const normalized = maplibregl.LngLatBounds.convert(bounds);
-	return `${normalized.getSouth().toFixed(2)}, ${normalized.getWest().toFixed(2)} → ${normalized.getNorth().toFixed(2)}, ${normalized.getEast().toFixed(2)}`;
 }
 
 function buildBasemapLabel(basemap: BasemapConfig): string {

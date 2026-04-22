@@ -333,6 +333,27 @@ button.secondary.active {
   font-size: 0.8rem;
 }
 
+.map-corner-chip {
+  position: absolute;
+  right: 18px;
+  bottom: 18px;
+  z-index: 2;
+  display: inline-flex;
+  align-items: center;
+  padding: 8px 12px;
+  border-radius: 999px;
+  background: rgba(255, 250, 240, 0.92);
+  border: 1px solid rgba(35, 53, 48, 0.12);
+  box-shadow: var(--shadow);
+  color: var(--ink);
+  font-size: 0.8rem;
+  text-decoration: none;
+}
+
+.map-corner-chip:hover {
+  transform: translateY(-1px);
+}
+
 .map-overlay {
   position: absolute;
   left: 18px;
@@ -340,7 +361,7 @@ button.secondary.active {
   right: 18px;
   pointer-events: none;
   display: flex;
-  justify-content: space-between;
+  justify-content: flex-start;
   gap: 12px;
 }
 
