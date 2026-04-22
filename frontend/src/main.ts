@@ -68,6 +68,86 @@ interface PendingPlaceState {
   longitude: number;
 }
 
+interface MapsBuildRecord {
+  key: string;
+  version: string | null;
+  size: number;
+  uploaded: string;
+  md5_sum: string | null;
+  b3_sum: string | null;
+}
+
+interface MapsBuildsResponse {
+  selected_build_key: string | null;
+  builds: MapsBuildRecord[];
+}
+
+interface MapsArchiveRecord {
+  id: string;
+  build_key: string;
+  relative_path: string;
+  tile_type: string;
+  min_zoom: number;
+  max_zoom: number;
+  min_lon: number;
+  min_lat: number;
+  max_lon: number;
+  max_lat: number;
+  file_size_bytes: number;
+}
+
+interface MapsChunkRecord {
+  id: string;
+  label: string;
+  kind: string;
+  min_lon: number | null;
+  min_lat: number | null;
+  max_lon: number | null;
+  max_lat: number | null;
+  max_zoom: number;
+  enabled: boolean;
+  display_order: number;
+  stale: boolean;
+  archives: MapsArchiveRecord[];
+}
+
+interface MapsLocalResponse {
+  selected_build_key: string | null;
+  chunks: MapsChunkRecord[];
+}
+
+interface MapsJobRecord {
+  id: string;
+  kind: string;
+  status: string;
+  build_key: string;
+  chunk_id: string | null;
+  archive_id: string | null;
+  error_message: string | null;
+  created_at: string;
+  updated_at: string;
+  started_at: string | null;
+  finished_at: string | null;
+}
+
+interface MapsJobsResponse {
+  jobs: MapsJobRecord[];
+}
+
+interface SettingsState {
+  isOpen: boolean;
+  isBusy: boolean;
+  builds: MapsBuildRecord[];
+  chunks: MapsChunkRecord[];
+  jobs: MapsJobRecord[];
+  selectedBuildKey: string;
+}
+
+interface AreaSelectionState {
+  start: { lng: number; lat: number } | null;
+  end: { lng: number; lat: number } | null;
+}
+
 const app = document.querySelector<HTMLDivElement>("#app");
 
 if (!app) {
@@ -79,8 +159,11 @@ app.innerHTML = `
     <aside class="panel">
       <div class="panel-scroll">
         <div class="brand">
-          <h1>Map Travel</h1>
-          <span class="pill">v1</span>
+          <div class="brand-title">
+            <h1>Map Travel</h1>
+            <span class="pill">v1</span>
+          </div>
+          <button id="open-settings" class="secondary" type="button">Settings</button>
         </div>
 
         <section class="section">
@@ -151,7 +234,7 @@ app.innerHTML = `
             </label>
             <button type="submit">Create collection</button>
           </form>
-          <div id="collection-list" class="collection-list" style="margin-top: 14px;"></div>
+          <div id="collection-list" class="collection-list section-space"></div>
         </section>
 
         <section class="section">
@@ -176,6 +259,16 @@ app.innerHTML = `
           <span id="mode-detail">Select a feature or switch to place mode.</span>
         </div>
       </div>
+
+      <aside id="settings-panel" class="settings-panel hidden">
+        <div class="settings-header">
+          <div>
+            <h2>Settings</h2>
+          </div>
+          <button id="close-settings" class="secondary" type="button">Close</button>
+        </div>
+        <div id="settings-content" class="settings-content"></div>
+      </aside>
     </main>
 
     <aside class="panel">
@@ -203,6 +296,10 @@ const filterStartsAfter = must<HTMLInputElement>("#filter-starts-after");
 const filterEndsBefore = must<HTMLInputElement>("#filter-ends-before");
 const toggleAddPlaceButton = must<HTMLButtonElement>("#toggle-add-place");
 const refreshMapButton = must<HTMLButtonElement>("#refresh-map");
+const openSettingsButton = must<HTMLButtonElement>("#open-settings");
+const closeSettingsButton = must<HTMLButtonElement>("#close-settings");
+const settingsPanel = must<HTMLDivElement>("#settings-panel");
+const settingsContent = must<HTMLDivElement>("#settings-content");
 const viewportSummary = must<HTMLSpanElement>("#viewport-summary");
 const viewportDetail = must<HTMLSpanElement>("#viewport-detail");
 const modeIndicator = must<HTMLSpanElement>("#mode-indicator");
@@ -227,6 +324,16 @@ let collections: CollectionRecord[] = [];
 let lastData: MapObjectsResponse = { places: [], tracks: [] };
 let addPlaceMode = false;
 let pendingPlace: PendingPlaceState | null = null;
+let areaSelectionMode = false;
+let areaSelection: AreaSelectionState = { start: null, end: null };
+const settingsState: SettingsState = {
+  isOpen: false,
+  isBusy: false,
+  builds: [],
+  chunks: [],
+  jobs: [],
+  selectedBuildKey: "",
+};
 
 const filters: FiltersState = {
   objectType: "",
@@ -239,9 +346,7 @@ const filters: FiltersState = {
 void bootstrap();
 
 async function bootstrap(): Promise<void> {
-  const basemap = await fetchJson<BasemapConfig>("/api/basemap");
-  basemapStatus.className = basemap.message ? "status warn" : "status";
-  basemapStatus.textContent = basemap.message ?? buildBasemapLabel(basemap);
+  const basemap = await applyBasemapConfig();
 
   map = new maplibregl.Map({
     container: "map",
@@ -252,12 +357,17 @@ async function bootstrap(): Promise<void> {
   map.addControl(new maplibregl.NavigationControl(), "top-right");
   map.on("load", () => {
     ensureOverlayLayers();
+    updateSelectionSource();
     void refreshMapData();
   });
   map.on("moveend", () => {
     void refreshMapData();
   });
   map.on("click", (event) => {
+    if (areaSelectionMode) {
+      handleAreaSelectionClick(event.lngLat.lng, event.lngLat.lat);
+      return;
+    }
     if (addPlaceMode) {
       openPlaceDrawer({
         latitude: Number(event.lngLat.lat.toFixed(6)),
@@ -322,6 +432,8 @@ function wireEventHandlers(): void {
   });
 
   toggleAddPlaceButton.addEventListener("click", () => {
+    areaSelectionMode = false;
+    clearAreaSelection();
     addPlaceMode = !addPlaceMode;
     pendingPlace = null;
     updateModeUi();
@@ -334,6 +446,17 @@ function wireEventHandlers(): void {
 
   refreshMapButton.addEventListener("click", async () => {
     await refreshMapData();
+  });
+
+  openSettingsButton.addEventListener("click", async () => {
+    settingsState.isOpen = true;
+    settingsPanel.classList.remove("hidden");
+    await refreshSettingsData();
+  });
+
+  closeSettingsButton.addEventListener("click", () => {
+    settingsState.isOpen = false;
+    settingsPanel.classList.add("hidden");
   });
 }
 
@@ -402,6 +525,13 @@ function ensureOverlayLayers(): void {
     });
   }
 
+  if (!map.getSource("selection-box")) {
+    map.addSource("selection-box", {
+      type: "geojson",
+      data: emptyFeatureCollection(),
+    });
+  }
+
   if (!map.getLayer("tracks-line")) {
     map.addLayer({
       id: "tracks-line",
@@ -444,6 +574,31 @@ function ensureOverlayLayers(): void {
       if (place) {
         renderPlaceDetail(place);
       }
+    });
+  }
+
+  if (!map.getLayer("selection-fill")) {
+    map.addLayer({
+      id: "selection-fill",
+      type: "fill",
+      source: "selection-box",
+      paint: {
+        "fill-color": "#2e7764",
+        "fill-opacity": 0.12,
+      },
+    });
+  }
+
+  if (!map.getLayer("selection-outline")) {
+    map.addLayer({
+      id: "selection-outline",
+      type: "line",
+      source: "selection-box",
+      paint: {
+        "line-color": "#2e7764",
+        "line-width": 2,
+        "line-dasharray": [2, 2],
+      },
     });
   }
 }
@@ -508,6 +663,8 @@ function renderPlaceDetail(place: PlaceRecord): void {
 function openPlaceDrawer(place: PendingPlaceState): void {
   pendingPlace = place;
   addPlaceMode = true;
+  areaSelectionMode = false;
+  clearAreaSelection();
   updateModeUi();
   detailPanel.innerHTML = `
     <form id="place-form" class="drawer-card">
@@ -598,9 +755,380 @@ function openPlaceDrawer(place: PendingPlaceState): void {
   });
 }
 
+async function refreshSettingsData(): Promise<void> {
+  if (!settingsState.isOpen) {
+    return;
+  }
+
+  settingsState.isBusy = true;
+  renderSettings();
+  const [builds, local, jobs] = await Promise.all([
+    fetchJson<MapsBuildsResponse>("/api/settings/maps/builds"),
+    fetchJson<MapsLocalResponse>("/api/settings/maps/local"),
+    fetchJson<MapsJobsResponse>("/api/settings/maps/jobs"),
+  ]);
+  settingsState.builds = builds.builds;
+  settingsState.chunks = local.chunks;
+  settingsState.jobs = jobs.jobs.slice(0, 8);
+  settingsState.selectedBuildKey =
+    local.selected_build_key ?? builds.selected_build_key ?? builds.builds[0]?.key ?? "";
+  settingsState.isBusy = false;
+  renderSettings();
+}
+
+function renderSettings(): void {
+  if (!settingsState.isOpen) {
+    return;
+  }
+
+  const staleCount = settingsState.chunks.filter((chunk) => chunk.stale).length;
+  settingsContent.innerHTML = `
+    <section class="settings-section">
+      <div class="settings-row">
+        <label>
+          Build
+          <select id="settings-build">
+            ${settingsState.builds
+              .map(
+                (build) => `
+                  <option value="${build.key}" ${build.key === settingsState.selectedBuildKey ? "selected" : ""}>
+                    ${escapeHtml(build.key)}${build.version ? ` · ${escapeHtml(build.version)}` : ""}
+                  </option>`,
+              )
+              .join("")}
+          </select>
+        </label>
+        <button id="refresh-builds" class="secondary" type="button">Refresh list</button>
+      </div>
+      <div class="inline-actions">
+        <button id="world-to-6" type="button" ${settingsState.isBusy || !settingsState.selectedBuildKey ? "disabled" : ""}>World to 6</button>
+        <button id="rebuild-stale" class="secondary" type="button" ${settingsState.isBusy || staleCount === 0 ? "disabled" : ""}>Rebuild stale</button>
+      </div>
+      <div class="status ${staleCount ? "warn" : ""}">
+        ${settingsState.isBusy ? "Working…" : staleCount ? `${staleCount} chunks are stale for ${escapeHtml(settingsState.selectedBuildKey || "the selected build")}.` : "Managed PMTiles are current for the selected build."}
+      </div>
+    </section>
+
+    <section class="settings-section">
+      <div class="section-heading">Area Extract</div>
+      <div class="field-grid">
+        <label>
+          Label
+          <input id="area-label" type="text" placeholder="Brisbane detail" value="Regional detail" />
+        </label>
+        <label>
+          Max zoom
+          <input id="area-max-zoom" type="number" min="0" max="12" value="8" />
+        </label>
+        <div class="inline-actions">
+          <button id="select-area" class="secondary" type="button">${areaSelectionMode ? "Area mode on" : "Select area"}</button>
+          <button id="create-area-extract" type="button" ${!hasCompleteAreaSelection() || !settingsState.selectedBuildKey ? "disabled" : ""}>Create extract</button>
+        </div>
+        <div class="status">
+          ${describeAreaSelection()}
+        </div>
+      </div>
+    </section>
+
+    <section class="settings-section">
+      <div class="section-heading">Active Layers</div>
+      <form id="active-layers-form" class="field-grid">
+        ${settingsState.chunks.length
+          ? settingsState.chunks
+              .map((chunk) => renderChunkEditor(chunk, settingsState.selectedBuildKey))
+              .join("")
+          : `<div class="drawer-empty">No managed PMTiles chunks yet.</div>`}
+        <button type="submit" ${settingsState.isBusy || !settingsState.selectedBuildKey ? "disabled" : ""}>Save active stack</button>
+      </form>
+    </section>
+
+    <section class="settings-section">
+      <div class="section-heading">Jobs</div>
+      <div class="field-grid">
+        ${settingsState.jobs.length
+          ? settingsState.jobs
+              .map(
+                (job) => `
+                  <div class="job-row">
+                    <strong>${escapeHtml(job.kind)}</strong>
+                    <span>${escapeHtml(job.status)} · ${escapeHtml(job.build_key)}</span>
+                    ${job.error_message ? `<span class="job-error">${escapeHtml(job.error_message)}</span>` : ""}
+                  </div>`,
+              )
+              .join("")
+          : `<div class="drawer-empty">No map jobs yet.</div>`}
+      </div>
+    </section>
+  `;
+
+  wireSettingsPanel();
+}
+
+function wireSettingsPanel(): void {
+  const buildSelect = settingsContent.querySelector<HTMLSelectElement>("#settings-build");
+  const refreshBuildsButton = settingsContent.querySelector<HTMLButtonElement>("#refresh-builds");
+  const worldTo6Button = settingsContent.querySelector<HTMLButtonElement>("#world-to-6");
+  const rebuildStaleButton = settingsContent.querySelector<HTMLButtonElement>("#rebuild-stale");
+  const selectAreaButton = settingsContent.querySelector<HTMLButtonElement>("#select-area");
+  const createAreaExtractButton = settingsContent.querySelector<HTMLButtonElement>("#create-area-extract");
+  const activeLayersForm = settingsContent.querySelector<HTMLFormElement>("#active-layers-form");
+
+  buildSelect?.addEventListener("change", () => {
+    settingsState.selectedBuildKey = buildSelect.value;
+    renderSettings();
+  });
+
+  refreshBuildsButton?.addEventListener("click", async () => {
+    await refreshSettingsData();
+  });
+
+  worldTo6Button?.addEventListener("click", async () => {
+    if (!settingsState.selectedBuildKey) return;
+    await runManagedMapsAction(async () => {
+      await postJson("/api/settings/maps/world-to-6", {
+        build_key: settingsState.selectedBuildKey,
+      });
+      await waitForMapJobs();
+    });
+  });
+
+  rebuildStaleButton?.addEventListener("click", async () => {
+    if (!settingsState.selectedBuildKey) return;
+    await runManagedMapsAction(async () => {
+      await postJson("/api/settings/maps/rebuild-chunks", {
+        build_key: settingsState.selectedBuildKey,
+      });
+      await waitForMapJobs();
+    });
+  });
+
+  selectAreaButton?.addEventListener("click", () => {
+    addPlaceMode = false;
+    areaSelectionMode = !areaSelectionMode;
+    if (!areaSelectionMode) {
+      clearAreaSelection();
+    }
+    updateModeUi();
+    renderSettings();
+  });
+
+  createAreaExtractButton?.addEventListener("click", async () => {
+    if (!settingsState.selectedBuildKey || !hasCompleteAreaSelection()) return;
+    const labelInput = settingsContent.querySelector<HTMLInputElement>("#area-label");
+    const maxZoomInput = settingsContent.querySelector<HTMLInputElement>("#area-max-zoom");
+    const bounds = normalizedAreaBounds();
+    if (!bounds) return;
+    await runManagedMapsAction(async () => {
+      await postJson("/api/settings/maps/area-extract", {
+        build_key: settingsState.selectedBuildKey,
+        label: labelInput?.value.trim() || "Regional detail",
+        min_lon: bounds.minLon,
+        min_lat: bounds.minLat,
+        max_lon: bounds.maxLon,
+        max_lat: bounds.maxLat,
+        max_zoom: Number(maxZoomInput?.value || "8"),
+      });
+      await waitForMapJobs();
+      areaSelectionMode = false;
+      clearAreaSelection();
+      updateModeUi();
+    });
+  });
+
+  activeLayersForm?.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    if (!settingsState.selectedBuildKey) return;
+    const rows = Array.from(settingsContent.querySelectorAll<HTMLElement>("[data-chunk-id]"));
+    const layers = rows.map((row) => {
+      const chunkId = row.dataset.chunkId ?? "";
+      const enabled = row.querySelector<HTMLInputElement>("input[name='enabled']")?.checked ?? false;
+      const displayOrder = Number(
+        row.querySelector<HTMLInputElement>("input[name='display_order']")?.value || "0",
+      );
+      return {
+        chunk_id: chunkId,
+        enabled,
+        display_order: displayOrder,
+      };
+    });
+
+    await runManagedMapsAction(async () => {
+      await postJson("/api/settings/maps/active-layers", {
+        selected_build_key: settingsState.selectedBuildKey,
+        layers,
+      });
+      await refreshBasemapStyle();
+    });
+  });
+}
+
+async function runManagedMapsAction(action: () => Promise<void>): Promise<void> {
+  settingsState.isBusy = true;
+  renderSettings();
+  await action();
+  settingsState.isBusy = false;
+  await refreshSettingsData();
+  await refreshBasemapStyle();
+}
+
+async function waitForMapJobs(): Promise<void> {
+  for (let attempt = 0; attempt < 200; attempt += 1) {
+    const jobs = await fetchJson<MapsJobsResponse>("/api/settings/maps/jobs");
+    settingsState.jobs = jobs.jobs.slice(0, 8);
+    renderSettings();
+    if (
+      jobs.jobs.every((job) => job.status !== "queued" && job.status !== "running")
+    ) {
+      return;
+    }
+    await delay(250);
+  }
+  throw new Error("Map jobs did not settle in time.");
+}
+
+function handleAreaSelectionClick(lng: number, lat: number): void {
+  if (!areaSelection.start) {
+    areaSelection.start = { lng, lat };
+    areaSelection.end = null;
+    updateDrawerMessage("Select the opposite corner for the PMTiles extract.");
+  } else {
+    areaSelection.end = { lng, lat };
+    updateDrawerMessage("Area selected. Set the extract details in Settings and create the chunk.");
+  }
+  updateSelectionSource();
+  renderSettings();
+  updateModeUi();
+}
+
+function updateSelectionSource(): void {
+  if (!map || !map.getSource("selection-box")) {
+    return;
+  }
+  const source = map.getSource("selection-box");
+  if (source?.type === "geojson") {
+    source.setData(buildSelectionFeatureCollection());
+  }
+}
+
+function buildSelectionFeatureCollection(): GeoJSON.FeatureCollection {
+  const bounds = normalizedAreaBounds();
+  if (!bounds) {
+    return emptyFeatureCollection();
+  }
+  return {
+    type: "FeatureCollection",
+    features: [
+      {
+        type: "Feature",
+        properties: {},
+        geometry: {
+          type: "Polygon",
+          coordinates: [
+            [
+              [bounds.minLon, bounds.minLat],
+              [bounds.minLon, bounds.maxLat],
+              [bounds.maxLon, bounds.maxLat],
+              [bounds.maxLon, bounds.minLat],
+              [bounds.minLon, bounds.minLat],
+            ],
+          ],
+        },
+      },
+    ],
+  };
+}
+
+function normalizedAreaBounds():
+  | { minLon: number; minLat: number; maxLon: number; maxLat: number }
+  | null {
+  if (!areaSelection.start || !areaSelection.end) {
+    return null;
+  }
+
+  return {
+    minLon: Math.min(areaSelection.start.lng, areaSelection.end.lng),
+    minLat: Math.min(areaSelection.start.lat, areaSelection.end.lat),
+    maxLon: Math.max(areaSelection.start.lng, areaSelection.end.lng),
+    maxLat: Math.max(areaSelection.start.lat, areaSelection.end.lat),
+  };
+}
+
+function clearAreaSelection(): void {
+  areaSelection = { start: null, end: null };
+  updateSelectionSource();
+}
+
+function hasCompleteAreaSelection(): boolean {
+  return Boolean(areaSelection.start && areaSelection.end);
+}
+
+function describeAreaSelection(): string {
+  const bounds = normalizedAreaBounds();
+  if (!areaSelection.start) {
+    return "Choose Select area, then click two corners on the map to define a regional PMTiles extract.";
+  }
+  if (!bounds) {
+    return "First corner captured. Click the opposite corner on the map.";
+  }
+  return `${bounds.minLat.toFixed(3)}, ${bounds.minLon.toFixed(3)} → ${bounds.maxLat.toFixed(3)}, ${bounds.maxLon.toFixed(3)}`;
+}
+
+function renderChunkEditor(chunk: MapsChunkRecord, selectedBuildKey: string): string {
+  const selectedArchive = chunk.archives.find((archive) => archive.build_key === selectedBuildKey);
+  const archiveSummary = selectedArchive
+    ? `${selectedArchive.tile_type.toUpperCase()} · z${selectedArchive.min_zoom}-${selectedArchive.max_zoom}`
+    : "No materialized archive for this build";
+  return `
+    <div class="chunk-card" data-chunk-id="${chunk.id}">
+      <div class="chunk-card-header">
+        <div>
+          <strong>${escapeHtml(chunk.label)}</strong>
+          <div class="chunk-card-meta">
+            <span>${escapeHtml(chunk.kind)}</span>
+            <span>${escapeHtml(archiveSummary)}</span>
+            ${chunk.stale ? `<span class="chunk-stale">stale</span>` : ""}
+          </div>
+        </div>
+        <label class="toggle">
+          <input name="enabled" type="checkbox" ${chunk.enabled ? "checked" : ""} />
+          <span>Active</span>
+        </label>
+      </div>
+      <div class="settings-row">
+        <label>
+          Order
+          <input name="display_order" type="number" value="${chunk.display_order}" />
+        </label>
+        <div class="chunk-card-bounds">
+          ${describeChunkBounds(chunk)}
+        </div>
+      </div>
+    </div>
+  `;
+}
+
+function describeChunkBounds(chunk: MapsChunkRecord): string {
+  if (
+    chunk.min_lon === null ||
+    chunk.min_lat === null ||
+    chunk.max_lon === null ||
+    chunk.max_lat === null
+  ) {
+    return "Full planet";
+  }
+  return `${chunk.min_lat.toFixed(2)}, ${chunk.min_lon.toFixed(2)} → ${chunk.max_lat.toFixed(2)}, ${chunk.max_lon.toFixed(2)}`;
+}
+
 function updateModeUi(): void {
   toggleAddPlaceButton.classList.toggle("active", addPlaceMode);
   toggleAddPlaceButton.textContent = addPlaceMode ? "Place mode on" : "Add place";
+  if (areaSelectionMode) {
+    modeIndicator.textContent = "Area extract";
+    modeDetail.textContent = areaSelection.start
+      ? "Click the opposite corner to finish the PMTiles extract box."
+      : "Click a first corner on the map for the PMTiles extract box.";
+    return;
+  }
   modeIndicator.textContent = addPlaceMode ? "Place mode" : "Browse";
   modeDetail.textContent = addPlaceMode
     ? "Click on the map to drop a new point of interest."
@@ -658,6 +1186,30 @@ function buildBasemapLabel(basemap: BasemapConfig): string {
   return `PMTiles ${tileType} · z${basemap.min_zoom ?? 0}-${basemap.max_zoom ?? 0}`;
 }
 
+async function applyBasemapConfig(): Promise<BasemapConfig> {
+  const basemap = await fetchJson<BasemapConfig>("/api/basemap");
+  basemapStatus.className = basemap.message ? "status warn" : "status";
+  basemapStatus.textContent = basemap.message ?? buildBasemapLabel(basemap);
+  return basemap;
+}
+
+async function refreshBasemapStyle(): Promise<void> {
+  const basemap = await applyBasemapConfig();
+  if (!map) {
+    return;
+  }
+
+  map.setStyle(basemap.style_url ?? defaultStyle);
+  map.once("styledata", () => {
+    if (!map.isStyleLoaded()) {
+      return;
+    }
+    ensureOverlayLayers();
+    updateSelectionSource();
+    void refreshMapData();
+  });
+}
+
 async function fetchJson<T>(url: string): Promise<T> {
   const response = await fetch(url);
   if (!response.ok) {
@@ -666,7 +1218,7 @@ async function fetchJson<T>(url: string): Promise<T> {
   return (await response.json()) as T;
 }
 
-async function postJson(url: string, payload: unknown): Promise<void> {
+async function postJson<T>(url: string, payload: unknown): Promise<T | null> {
   const response = await fetch(url, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -675,6 +1227,12 @@ async function postJson(url: string, payload: unknown): Promise<void> {
   if (!response.ok) {
     throw await buildHttpError(response);
   }
+
+  const text = await response.text();
+  if (!text) {
+    return null;
+  }
+  return JSON.parse(text) as T;
 }
 
 async function postForm(url: string, payload: FormData): Promise<void> {
@@ -727,10 +1285,23 @@ function escapeHtml(value: string): string {
     .replaceAll("'", "&#39;");
 }
 
+function formatBytes(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 ** 2) return `${(bytes / 1024).toFixed(1)} KB`;
+  if (bytes < 1024 ** 3) return `${(bytes / 1024 ** 2).toFixed(1)} MB`;
+  return `${(bytes / 1024 ** 3).toFixed(1)} GB`;
+}
+
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => {
+    window.setTimeout(resolve, ms);
+  });
+}
+
 function must<T extends Element>(selector: string): T {
   const element = document.querySelector<T>(selector);
   if (!element) {
-    throw new Error(`Expected element ${selector}`);
+    throw new Error(`Expected element for selector ${selector}`);
   }
   return element;
 }

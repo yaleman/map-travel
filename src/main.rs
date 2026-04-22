@@ -47,6 +47,34 @@ struct Cli {
     /// Path to PMTiles style file
     #[arg(long, env = "MAP_TRAVEL_PMTILES_STYLE_PATH")]
     pmtiles_style_path: Option<PathBuf>,
+
+    /// Directory for managed PMTiles cache files
+    #[arg(long, env = "MAP_TRAVEL_MANAGED_MAPS_DIR")]
+    managed_maps_dir: Option<PathBuf>,
+
+    /// Protomaps build catalog URL
+    #[arg(
+        long,
+        env = "MAP_TRAVEL_PROTOMAPS_BUILDS_METADATA_URL",
+        default_value = "https://build-metadata.protomaps.dev/builds.json"
+    )]
+    protomaps_builds_metadata_url: String,
+
+    /// Protomaps build base URL
+    #[arg(
+        long,
+        env = "MAP_TRAVEL_PROTOMAPS_BUILDS_BASE_URL",
+        default_value = "https://build.protomaps.com"
+    )]
+    protomaps_builds_base_url: String,
+
+    /// Protomaps style service base URL
+    #[arg(
+        long,
+        env = "MAP_TRAVEL_PROTOMAPS_STYLE_BASE_URL",
+        default_value = "https://npm-style.protomaps.dev/style.json"
+    )]
+    protomaps_style_base_url: String,
 }
 
 #[tokio::main]
@@ -62,6 +90,10 @@ async fn main() -> Result<ExitCode, ExitCode> {
         listen_addr: cli.listen_addr,
         pmtiles_path: cli.pmtiles_path,
         pmtiles_style_path: cli.pmtiles_style_path,
+        managed_maps_dir: cli.managed_maps_dir,
+        protomaps_builds_metadata_url: cli.protomaps_builds_metadata_url,
+        protomaps_builds_base_url: cli.protomaps_builds_base_url,
+        protomaps_style_base_url: cli.protomaps_style_base_url,
     };
 
     let context = std::sync::Arc::new(AppContext::bootstrap(config).await.map_err(|error| {

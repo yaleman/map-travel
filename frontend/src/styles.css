@@ -74,6 +74,12 @@ body {
   margin-bottom: 20px;
 }
 
+.brand-title {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
 .brand h1 {
   margin: 0;
   font-size: 1.9rem;
@@ -165,6 +171,12 @@ button:hover {
   transform: translateY(-1px);
 }
 
+button:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+  transform: none;
+}
+
 button.secondary {
   background: rgba(35, 53, 48, 0.08);
   color: var(--ink);
@@ -196,6 +208,10 @@ button.secondary.active {
 .detail-list {
   display: grid;
   gap: 10px;
+}
+
+.section-space {
+  margin-top: 14px;
 }
 
 .collection-chip {
@@ -285,6 +301,134 @@ button.secondary.active {
 .overlay-card strong {
   display: block;
   margin-bottom: 4px;
+}
+
+.settings-panel {
+  position: absolute;
+  top: 18px;
+  right: 18px;
+  bottom: 18px;
+  width: min(420px, calc(100% - 36px));
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  gap: 0;
+  padding: 18px;
+  border-radius: 24px;
+  border: 1px solid rgba(35, 53, 48, 0.12);
+  background: rgba(255, 250, 240, 0.96);
+  box-shadow: var(--shadow);
+  backdrop-filter: blur(14px);
+  z-index: 3;
+}
+
+.settings-panel.hidden {
+  display: none;
+}
+
+.settings-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding-bottom: 14px;
+  border-bottom: 1px solid var(--line);
+}
+
+.settings-header h2 {
+  margin: 0;
+  font-size: 1.4rem;
+  letter-spacing: -0.03em;
+}
+
+.settings-content {
+  min-height: 0;
+  overflow: auto;
+  padding-top: 16px;
+  display: grid;
+  gap: 18px;
+}
+
+.settings-section {
+  display: grid;
+  gap: 12px;
+  padding-bottom: 16px;
+  border-bottom: 1px solid var(--line);
+}
+
+.settings-section:last-child {
+  border-bottom: 0;
+  padding-bottom: 0;
+}
+
+.settings-row {
+  display: grid;
+  gap: 10px;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: end;
+}
+
+.section-heading {
+  font-size: 0.9rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.chunk-card,
+.job-row {
+  display: grid;
+  gap: 10px;
+  padding: 12px 14px;
+  border-radius: 16px;
+  border: 1px solid var(--line);
+  background: rgba(255, 255, 255, 0.68);
+}
+
+.chunk-card-header {
+  display: flex;
+  align-items: start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.chunk-card-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 6px;
+  font-size: 0.82rem;
+  color: var(--muted);
+}
+
+.chunk-stale {
+  color: var(--accent-dark);
+  font-weight: 700;
+}
+
+.chunk-card-bounds {
+  align-self: end;
+  color: var(--muted);
+  font-size: 0.85rem;
+}
+
+.toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--ink);
+}
+
+.toggle input {
+  width: auto;
+  margin: 0;
+}
+
+.job-row strong {
+  font-size: 0.92rem;
+}
+
+.job-error {
+  color: var(--accent-dark);
 }
 
 .maplibregl-popup-content {

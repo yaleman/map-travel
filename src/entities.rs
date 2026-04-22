@@ -157,3 +157,108 @@ pub mod object_tag {
 
     impl ActiveModelBehavior for ActiveModel {}
 }
+
+pub mod protomaps_build {
+    use super::*;
+
+    #[derive(Clone, Debug, PartialEq, DeriveEntityModel)]
+    #[sea_orm(table_name = "protomaps_builds")]
+    pub struct Model {
+        #[sea_orm(primary_key, auto_increment = false)]
+        pub key: String,
+        pub version: Option<String>,
+        pub size: i64,
+        pub uploaded: String,
+        pub md5_sum: Option<String>,
+        pub b3_sum: Option<String>,
+        pub created_at: DateTimeUtc,
+        pub updated_at: DateTimeUtc,
+    }
+
+    #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]
+    pub enum Relation {}
+
+    impl ActiveModelBehavior for ActiveModel {}
+}
+
+pub mod map_chunk {
+    use super::*;
+
+    #[derive(Clone, Debug, PartialEq, DeriveEntityModel)]
+    #[sea_orm(table_name = "map_chunk_defs")]
+    pub struct Model {
+        #[sea_orm(primary_key, auto_increment = false)]
+        pub id: String,
+        pub label: String,
+        pub kind: String,
+        pub min_lon: Option<f64>,
+        pub min_lat: Option<f64>,
+        pub max_lon: Option<f64>,
+        pub max_lat: Option<f64>,
+        pub max_zoom: i32,
+        pub enabled: bool,
+        pub display_order: i32,
+        pub created_at: DateTimeUtc,
+        pub updated_at: DateTimeUtc,
+    }
+
+    #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]
+    pub enum Relation {}
+
+    impl ActiveModelBehavior for ActiveModel {}
+}
+
+pub mod map_archive {
+    use super::*;
+
+    #[derive(Clone, Debug, PartialEq, DeriveEntityModel)]
+    #[sea_orm(table_name = "map_archives")]
+    pub struct Model {
+        #[sea_orm(primary_key, auto_increment = false)]
+        pub id: String,
+        pub chunk_id: String,
+        pub build_key: String,
+        pub relative_path: String,
+        pub tile_type: String,
+        pub min_zoom: i32,
+        pub max_zoom: i32,
+        pub min_lon: f64,
+        pub min_lat: f64,
+        pub max_lon: f64,
+        pub max_lat: f64,
+        pub file_size_bytes: i64,
+        pub created_at: DateTimeUtc,
+        pub updated_at: DateTimeUtc,
+    }
+
+    #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]
+    pub enum Relation {}
+
+    impl ActiveModelBehavior for ActiveModel {}
+}
+
+pub mod map_job {
+    use super::*;
+
+    #[derive(Clone, Debug, PartialEq, DeriveEntityModel)]
+    #[sea_orm(table_name = "map_jobs")]
+    pub struct Model {
+        #[sea_orm(primary_key, auto_increment = false)]
+        pub id: String,
+        pub kind: String,
+        pub status: String,
+        pub build_key: String,
+        pub chunk_id: Option<String>,
+        pub archive_id: Option<String>,
+        pub error_message: Option<String>,
+        pub created_at: DateTimeUtc,
+        pub updated_at: DateTimeUtc,
+        pub started_at: Option<DateTimeUtc>,
+        pub finished_at: Option<DateTimeUtc>,
+    }
+
+    #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]
+    pub enum Relation {}
+
+    impl ActiveModelBehavior for ActiveModel {}
+}

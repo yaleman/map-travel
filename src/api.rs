@@ -3,7 +3,7 @@ use std::{io::BufReader, io::Cursor};
 
 use axum::{
     Json, Router,
-    extract::{Multipart, Path, Query, State},
+    extract::{Multipart, Query, State},
     http::StatusCode,
     routing::{get, post},
 };
@@ -29,9 +29,7 @@ pub fn build_router(context: Arc<AppContext>) -> Router {
         .route("/api/places", post(create_place))
         .route("/api/tracks/import", post(import_tracks))
         .route("/api/map-objects", get(list_map_objects))
-        .route("/api/basemap", get(get_basemap_config))
-        .route("/api/basemap/style.json", get(get_basemap_style))
-        .route("/api/basemap/tiles/{z}/{x}/{y}", get(get_basemap_tile))
+        .merge(crate::maps_api::build_router())
         .with_state(context)
 }
 
@@ -397,154 +395,6 @@ async fn list_map_objects(
     Ok(Json(MapObjectsResponse { tracks, places }))
 }
 
-#[derive(Debug, Serialize)]
-struct BasemapConfigResponse {
-    enabled: bool,
-    style_url: Option<String>,
-    tile_type: Option<String>,
-    min_zoom: Option<u8>,
-    max_zoom: Option<u8>,
-    bounds: Option<[f64; 4]>,
-    message: Option<String>,
-}
-
-async fn get_basemap_config(
-    State(context): State<Arc<AppContext>>,
-) -> AppResult<Json<BasemapConfigResponse>> {
-    let Some(reader) = context.pmtiles_reader() else {
-        return Ok(Json(BasemapConfigResponse {
-            enabled: false,
-            style_url: None,
-            tile_type: None,
-            min_zoom: None,
-            max_zoom: None,
-            bounds: None,
-            message: Some("No PMTiles archive configured".to_owned()),
-        }));
-    };
-
-    let header = reader.get_header();
-    let tile_type = tile_type_name(header.tile_type);
-    let style_url = match header.tile_type {
-        pmtiles::TileType::Png
-        | pmtiles::TileType::Jpeg
-        | pmtiles::TileType::Webp
-        | pmtiles::TileType::Avif => Some("/api/basemap/style.json".to_owned()),
-        pmtiles::TileType::Mvt | pmtiles::TileType::Mlt => context
-            .config()
-            .pmtiles_style_path
-            .as_ref()
-            .map(|_| "/api/basemap/style.json".to_owned()),
-        pmtiles::TileType::Unknown => None,
-    };
-
-    let message = if style_url.is_none()
-        && matches!(
-            header.tile_type,
-            pmtiles::TileType::Mvt | pmtiles::TileType::Mlt
-        ) {
-        Some("PMTiles archive is vector data. Set MAP_TRAVEL_PMTILES_STYLE_PATH to render it as a basemap.".to_owned())
-    } else {
-        None
-    };
-
-    Ok(Json(BasemapConfigResponse {
-        enabled: true,
-        style_url,
-        tile_type: Some(tile_type.to_owned()),
-        min_zoom: Some(header.min_zoom),
-        max_zoom: Some(header.max_zoom),
-        bounds: Some([
-            header.min_longitude,
-            header.min_latitude,
-            header.max_longitude,
-            header.max_latitude,
-        ]),
-        message,
-    }))
-}
-
-async fn get_basemap_style(
-    State(context): State<Arc<AppContext>>,
-) -> AppResult<Json<serde_json::Value>> {
-    let reader = context
-        .pmtiles_reader()
-        .ok_or_else(|| AppError::InvalidRequest("No PMTiles archive configured".to_owned()))?;
-    let header = reader.get_header();
-
-    if let Some(style_path) = &context.config().pmtiles_style_path {
-        let style = tokio::fs::read_to_string(style_path)
-            .await
-            .map_err(|error| AppError::Internal(format!("could not read style JSON: {error}")))?;
-        let parsed = serde_json::from_str(&style)
-            .map_err(|error| AppError::Internal(format!("style JSON was invalid: {error}")))?;
-        return Ok(Json(parsed));
-    }
-
-    match header.tile_type {
-        pmtiles::TileType::Png
-        | pmtiles::TileType::Jpeg
-        | pmtiles::TileType::Webp
-        | pmtiles::TileType::Avif => Ok(Json(serde_json::json!({
-            "version": 8,
-            "sources": {
-                "basemap": {
-                    "type": "raster",
-                    "tiles": ["/api/basemap/tiles/{z}/{x}/{y}"],
-                    "tileSize": 256,
-                    "minzoom": header.min_zoom,
-                    "maxzoom": header.max_zoom,
-                }
-            },
-            "layers": [
-                {
-                    "id": "basemap",
-                    "type": "raster",
-                    "source": "basemap"
-                }
-            ]
-        }))),
-        pmtiles::TileType::Mvt | pmtiles::TileType::Mlt => Err(AppError::InvalidRequest(
-            "Vector PMTiles archives require MAP_TRAVEL_PMTILES_STYLE_PATH".to_owned(),
-        )),
-        pmtiles::TileType::Unknown => Err(AppError::InvalidRequest(
-            "PMTiles archive reported an unknown tile type".to_owned(),
-        )),
-    }
-}
-
-async fn get_basemap_tile(
-    State(context): State<Arc<AppContext>>,
-    Path((z, x, y)): Path<(u8, u32, u32)>,
-) -> AppResult<impl axum::response::IntoResponse> {
-    let reader = context
-        .pmtiles_reader()
-        .ok_or_else(|| AppError::InvalidRequest("No PMTiles archive configured".to_owned()))?;
-    let coord = pmtiles::TileCoord::new(z, x, y)
-        .map_err(|error| AppError::InvalidRequest(format!("invalid tile coordinate: {error}")))?;
-    let header = reader.get_header();
-    let tile = reader
-        .get_tile(coord)
-        .await
-        .map_err(|error| AppError::Internal(format!("could not read PMTiles tile: {error}")))?
-        .ok_or_else(|| AppError::InvalidRequest("tile not found in PMTiles archive".to_owned()))?;
-
-    let mut response = axum::response::Response::builder()
-        .status(StatusCode::OK)
-        .header(
-            axum::http::header::CONTENT_TYPE,
-            header.tile_type.content_type(),
-        );
-
-    if let Some(content_encoding) = header.tile_compression.content_encoding() {
-        response = response.header(axum::http::header::CONTENT_ENCODING, content_encoding);
-    }
-
-    response
-        .body(axum::body::Body::from(tile))
-        .map_err(|error| AppError::Internal(format!("could not build tile response: {error}")))
-}
-
 fn place_condition(query: &MapObjectsQuery) -> AppResult<Condition> {
     if let Some(object_type) = query.object_type.as_deref()
         && object_type != "place"
@@ -664,18 +514,6 @@ fn validate_collection_kind(kind: &str) -> AppResult<()> {
         _ => Err(AppError::InvalidRequest(format!(
             "unsupported collection kind `{kind}`"
         ))),
-    }
-}
-
-fn tile_type_name(tile_type: pmtiles::TileType) -> &'static str {
-    match tile_type {
-        pmtiles::TileType::Unknown => "unknown",
-        pmtiles::TileType::Mvt => "mvt",
-        pmtiles::TileType::Png => "png",
-        pmtiles::TileType::Jpeg => "jpeg",
-        pmtiles::TileType::Webp => "webp",
-        pmtiles::TileType::Avif => "avif",
-        pmtiles::TileType::Mlt => "mlt",
     }
 }
 

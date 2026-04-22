@@ -1,0 +1,268 @@
+use sea_orm_migration::prelude::*;
+
+#[derive(DeriveMigrationName)]
+pub struct Migration;
+
+#[async_trait::async_trait]
+impl MigrationTrait for Migration {
+    async fn up(&self, manager: &SchemaManager) -> Result<(), DbErr> {
+        manager
+            .create_table(
+                Table::create()
+                    .table(ProtomapsBuilds::Table)
+                    .if_not_exists()
+                    .col(
+                        ColumnDef::new(ProtomapsBuilds::Key)
+                            .string()
+                            .not_null()
+                            .primary_key(),
+                    )
+                    .col(ColumnDef::new(ProtomapsBuilds::Version).string())
+                    .col(
+                        ColumnDef::new(ProtomapsBuilds::Size)
+                            .big_integer()
+                            .not_null(),
+                    )
+                    .col(
+                        ColumnDef::new(ProtomapsBuilds::Uploaded)
+                            .string()
+                            .not_null(),
+                    )
+                    .col(ColumnDef::new(ProtomapsBuilds::Md5Sum).string())
+                    .col(ColumnDef::new(ProtomapsBuilds::B3Sum).string())
+                    .col(
+                        ColumnDef::new(ProtomapsBuilds::CreatedAt)
+                            .timestamp_with_time_zone()
+                            .not_null(),
+                    )
+                    .col(
+                        ColumnDef::new(ProtomapsBuilds::UpdatedAt)
+                            .timestamp_with_time_zone()
+                            .not_null(),
+                    )
+                    .to_owned(),
+            )
+            .await?;
+
+        manager
+            .create_table(
+                Table::create()
+                    .table(MapChunkDefs::Table)
+                    .if_not_exists()
+                    .col(
+                        ColumnDef::new(MapChunkDefs::Id)
+                            .string()
+                            .not_null()
+                            .primary_key(),
+                    )
+                    .col(ColumnDef::new(MapChunkDefs::Label).string().not_null())
+                    .col(ColumnDef::new(MapChunkDefs::Kind).string().not_null())
+                    .col(ColumnDef::new(MapChunkDefs::MinLon).double())
+                    .col(ColumnDef::new(MapChunkDefs::MinLat).double())
+                    .col(ColumnDef::new(MapChunkDefs::MaxLon).double())
+                    .col(ColumnDef::new(MapChunkDefs::MaxLat).double())
+                    .col(ColumnDef::new(MapChunkDefs::MaxZoom).integer().not_null())
+                    .col(ColumnDef::new(MapChunkDefs::Enabled).boolean().not_null())
+                    .col(
+                        ColumnDef::new(MapChunkDefs::DisplayOrder)
+                            .integer()
+                            .not_null(),
+                    )
+                    .col(
+                        ColumnDef::new(MapChunkDefs::CreatedAt)
+                            .timestamp_with_time_zone()
+                            .not_null(),
+                    )
+                    .col(
+                        ColumnDef::new(MapChunkDefs::UpdatedAt)
+                            .timestamp_with_time_zone()
+                            .not_null(),
+                    )
+                    .to_owned(),
+            )
+            .await?;
+
+        manager
+            .create_table(
+                Table::create()
+                    .table(MapArchives::Table)
+                    .if_not_exists()
+                    .col(
+                        ColumnDef::new(MapArchives::Id)
+                            .string()
+                            .not_null()
+                            .primary_key(),
+                    )
+                    .col(ColumnDef::new(MapArchives::ChunkId).string().not_null())
+                    .col(ColumnDef::new(MapArchives::BuildKey).string().not_null())
+                    .col(
+                        ColumnDef::new(MapArchives::RelativePath)
+                            .string()
+                            .not_null(),
+                    )
+                    .col(ColumnDef::new(MapArchives::TileType).string().not_null())
+                    .col(ColumnDef::new(MapArchives::MinZoom).integer().not_null())
+                    .col(ColumnDef::new(MapArchives::MaxZoom).integer().not_null())
+                    .col(ColumnDef::new(MapArchives::MinLon).double().not_null())
+                    .col(ColumnDef::new(MapArchives::MinLat).double().not_null())
+                    .col(ColumnDef::new(MapArchives::MaxLon).double().not_null())
+                    .col(ColumnDef::new(MapArchives::MaxLat).double().not_null())
+                    .col(
+                        ColumnDef::new(MapArchives::FileSizeBytes)
+                            .big_integer()
+                            .not_null(),
+                    )
+                    .col(
+                        ColumnDef::new(MapArchives::CreatedAt)
+                            .timestamp_with_time_zone()
+                            .not_null(),
+                    )
+                    .col(
+                        ColumnDef::new(MapArchives::UpdatedAt)
+                            .timestamp_with_time_zone()
+                            .not_null(),
+                    )
+                    .to_owned(),
+            )
+            .await?;
+
+        manager
+            .create_table(
+                Table::create()
+                    .table(MapJobs::Table)
+                    .if_not_exists()
+                    .col(
+                        ColumnDef::new(MapJobs::Id)
+                            .string()
+                            .not_null()
+                            .primary_key(),
+                    )
+                    .col(ColumnDef::new(MapJobs::Kind).string().not_null())
+                    .col(ColumnDef::new(MapJobs::Status).string().not_null())
+                    .col(ColumnDef::new(MapJobs::BuildKey).string().not_null())
+                    .col(ColumnDef::new(MapJobs::ChunkId).string())
+                    .col(ColumnDef::new(MapJobs::ArchiveId).string())
+                    .col(ColumnDef::new(MapJobs::ErrorMessage).text())
+                    .col(
+                        ColumnDef::new(MapJobs::CreatedAt)
+                            .timestamp_with_time_zone()
+                            .not_null(),
+                    )
+                    .col(
+                        ColumnDef::new(MapJobs::UpdatedAt)
+                            .timestamp_with_time_zone()
+                            .not_null(),
+                    )
+                    .col(ColumnDef::new(MapJobs::StartedAt).timestamp_with_time_zone())
+                    .col(ColumnDef::new(MapJobs::FinishedAt).timestamp_with_time_zone())
+                    .to_owned(),
+            )
+            .await?;
+
+        manager
+            .create_index(
+                Index::create()
+                    .name("idx_map_archives_chunk_build")
+                    .table(MapArchives::Table)
+                    .col(MapArchives::ChunkId)
+                    .col(MapArchives::BuildKey)
+                    .unique()
+                    .to_owned(),
+            )
+            .await?;
+
+        manager
+            .create_index(
+                Index::create()
+                    .name("idx_map_jobs_status_created")
+                    .table(MapJobs::Table)
+                    .col(MapJobs::Status)
+                    .col(MapJobs::CreatedAt)
+                    .to_owned(),
+            )
+            .await?;
+
+        Ok(())
+    }
+
+    async fn down(&self, manager: &SchemaManager) -> Result<(), DbErr> {
+        manager
+            .drop_table(Table::drop().table(MapJobs::Table).to_owned())
+            .await?;
+        manager
+            .drop_table(Table::drop().table(MapArchives::Table).to_owned())
+            .await?;
+        manager
+            .drop_table(Table::drop().table(MapChunkDefs::Table).to_owned())
+            .await?;
+        manager
+            .drop_table(Table::drop().table(ProtomapsBuilds::Table).to_owned())
+            .await?;
+        Ok(())
+    }
+}
+
+#[derive(DeriveIden)]
+enum ProtomapsBuilds {
+    Table,
+    Key,
+    Version,
+    Size,
+    Uploaded,
+    Md5Sum,
+    B3Sum,
+    CreatedAt,
+    UpdatedAt,
+}
+
+#[derive(DeriveIden)]
+enum MapChunkDefs {
+    Table,
+    Id,
+    Label,
+    Kind,
+    MinLon,
+    MinLat,
+    MaxLon,
+    MaxLat,
+    MaxZoom,
+    Enabled,
+    DisplayOrder,
+    CreatedAt,
+    UpdatedAt,
+}
+
+#[derive(DeriveIden)]
+enum MapArchives {
+    Table,
+    Id,
+    ChunkId,
+    BuildKey,
+    RelativePath,
+    TileType,
+    MinZoom,
+    MaxZoom,
+    MinLon,
+    MinLat,
+    MaxLon,
+    MaxLat,
+    FileSizeBytes,
+    CreatedAt,
+    UpdatedAt,
+}
+
+#[derive(DeriveIden)]
+enum MapJobs {
+    Table,
+    Id,
+    Kind,
+    Status,
+    BuildKey,
+    ChunkId,
+    ArchiveId,
+    ErrorMessage,
+    CreatedAt,
+    UpdatedAt,
+    StartedAt,
+    FinishedAt,
+}

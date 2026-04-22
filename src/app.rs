@@ -11,6 +11,7 @@ use uuid::Uuid;
 use crate::{
     entities::metadata,
     error::{AppError, AppResult},
+    maps::{MapsConfig, MapsService, derive_managed_maps_dir},
 };
 
 #[derive(Clone, Debug)]
@@ -19,6 +20,10 @@ pub struct AppConfig {
     pub listen_addr: SocketAddr,
     pub pmtiles_path: Option<PathBuf>,
     pub pmtiles_style_path: Option<PathBuf>,
+    pub managed_maps_dir: Option<PathBuf>,
+    pub protomaps_builds_metadata_url: String,
+    pub protomaps_builds_base_url: String,
+    pub protomaps_style_base_url: String,
 }
 
 impl AppConfig {
@@ -31,6 +36,11 @@ impl AppConfig {
                 .expect("test listen address should parse"),
             pmtiles_path: None,
             pmtiles_style_path: None,
+            managed_maps_dir: Some(std::env::temp_dir().join("map-travel-managed-maps-tests")),
+            protomaps_builds_metadata_url: "https://build-metadata.protomaps.dev/builds.json"
+                .to_owned(),
+            protomaps_builds_base_url: "https://build.protomaps.com".to_owned(),
+            protomaps_style_base_url: "https://npm-style.protomaps.dev/style.json".to_owned(),
         }
     }
 }
@@ -41,6 +51,7 @@ pub struct AppContext {
     owner_id: String,
     config: AppConfig,
     pmtiles_reader: Option<Arc<AsyncPmTilesReader<MmapBackend>>>,
+    maps: Arc<MapsService>,
 }
 
 impl AppContext {
@@ -55,6 +66,27 @@ impl AppContext {
             .map_err(|error| AppError::Internal(format!("migration failed: {error}")))?;
 
         let owner_id = ensure_owner_id(&db).await?;
+        let managed_maps_dir = config
+            .managed_maps_dir
+            .clone()
+            .or_else(|| derive_managed_maps_dir(&config.database_url))
+            .ok_or_else(|| {
+                AppError::Internal(
+                    "could not determine a managed maps directory from the database URL".to_owned(),
+                )
+            })?;
+        let maps = Arc::new(
+            MapsService::new(
+                db.clone(),
+                MapsConfig {
+                    managed_maps_dir,
+                    protomaps_builds_metadata_url: config.protomaps_builds_metadata_url.clone(),
+                    protomaps_builds_base_url: config.protomaps_builds_base_url.clone(),
+                    protomaps_style_base_url: config.protomaps_style_base_url.clone(),
+                },
+            )
+            .await?,
+        );
         let pmtiles_reader = match &config.pmtiles_path {
             Some(path) => Some(Arc::new(
                 AsyncPmTilesReader::new_with_path(path)
@@ -71,6 +103,7 @@ impl AppContext {
             owner_id,
             config,
             pmtiles_reader,
+            maps,
         })
     }
 
@@ -88,6 +121,10 @@ impl AppContext {
 
     pub fn pmtiles_reader(&self) -> Option<&Arc<AsyncPmTilesReader<MmapBackend>>> {
         self.pmtiles_reader.as_ref()
+    }
+
+    pub fn maps(&self) -> &Arc<MapsService> {
+        &self.maps
     }
 }
 
