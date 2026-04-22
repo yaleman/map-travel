@@ -1,0 +1,344 @@
+use sea_orm_migration::prelude::*;
+
+#[derive(DeriveMigrationName)]
+pub struct Migration;
+
+#[async_trait::async_trait]
+impl MigrationTrait for Migration {
+    async fn up(&self, manager: &SchemaManager) -> Result<(), DbErr> {
+        manager
+            .create_table(
+                Table::create()
+                    .table(Metadata::Table)
+                    .if_not_exists()
+                    .col(
+                        ColumnDef::new(Metadata::Key)
+                            .string()
+                            .not_null()
+                            .primary_key(),
+                    )
+                    .col(ColumnDef::new(Metadata::Value).string().not_null())
+                    .to_owned(),
+            )
+            .await?;
+
+        manager
+            .create_table(
+                Table::create()
+                    .table(Collections::Table)
+                    .if_not_exists()
+                    .col(
+                        ColumnDef::new(Collections::Id)
+                            .string()
+                            .not_null()
+                            .primary_key(),
+                    )
+                    .col(ColumnDef::new(Collections::OwnerId).string().not_null())
+                    .col(ColumnDef::new(Collections::Name).string().not_null())
+                    .col(ColumnDef::new(Collections::Kind).string().not_null())
+                    .col(ColumnDef::new(Collections::StartsAt).timestamp_with_time_zone())
+                    .col(ColumnDef::new(Collections::EndsAt).timestamp_with_time_zone())
+                    .col(ColumnDef::new(Collections::IsPublic).boolean().not_null())
+                    .col(
+                        ColumnDef::new(Collections::CreatedAt)
+                            .timestamp_with_time_zone()
+                            .not_null(),
+                    )
+                    .col(
+                        ColumnDef::new(Collections::UpdatedAt)
+                            .timestamp_with_time_zone()
+                            .not_null(),
+                    )
+                    .to_owned(),
+            )
+            .await?;
+
+        manager
+            .create_table(
+                Table::create()
+                    .table(Places::Table)
+                    .if_not_exists()
+                    .col(ColumnDef::new(Places::Id).string().not_null().primary_key())
+                    .col(ColumnDef::new(Places::OwnerId).string().not_null())
+                    .col(ColumnDef::new(Places::Name).string().not_null())
+                    .col(ColumnDef::new(Places::Category).string())
+                    .col(ColumnDef::new(Places::Notes).text())
+                    .col(ColumnDef::new(Places::Latitude).double().not_null())
+                    .col(ColumnDef::new(Places::Longitude).double().not_null())
+                    .col(ColumnDef::new(Places::VisitStart).timestamp_with_time_zone())
+                    .col(ColumnDef::new(Places::VisitEnd).timestamp_with_time_zone())
+                    .col(ColumnDef::new(Places::RelatedTrackId).string())
+                    .col(ColumnDef::new(Places::IsPublic).boolean().not_null())
+                    .col(
+                        ColumnDef::new(Places::CreatedAt)
+                            .timestamp_with_time_zone()
+                            .not_null(),
+                    )
+                    .col(
+                        ColumnDef::new(Places::UpdatedAt)
+                            .timestamp_with_time_zone()
+                            .not_null(),
+                    )
+                    .to_owned(),
+            )
+            .await?;
+
+        manager
+            .create_table(
+                Table::create()
+                    .table(Tracks::Table)
+                    .if_not_exists()
+                    .col(ColumnDef::new(Tracks::Id).string().not_null().primary_key())
+                    .col(ColumnDef::new(Tracks::OwnerId).string().not_null())
+                    .col(ColumnDef::new(Tracks::Title).string())
+                    .col(ColumnDef::new(Tracks::Notes).text())
+                    .col(ColumnDef::new(Tracks::GeometryJson).text().not_null())
+                    .col(ColumnDef::new(Tracks::MinLat).double().not_null())
+                    .col(ColumnDef::new(Tracks::MinLon).double().not_null())
+                    .col(ColumnDef::new(Tracks::MaxLat).double().not_null())
+                    .col(ColumnDef::new(Tracks::MaxLon).double().not_null())
+                    .col(ColumnDef::new(Tracks::DistanceM).double())
+                    .col(ColumnDef::new(Tracks::StartTime).timestamp_with_time_zone())
+                    .col(ColumnDef::new(Tracks::EndTime).timestamp_with_time_zone())
+                    .col(ColumnDef::new(Tracks::IsPublic).boolean().not_null())
+                    .col(
+                        ColumnDef::new(Tracks::CreatedAt)
+                            .timestamp_with_time_zone()
+                            .not_null(),
+                    )
+                    .col(
+                        ColumnDef::new(Tracks::UpdatedAt)
+                            .timestamp_with_time_zone()
+                            .not_null(),
+                    )
+                    .to_owned(),
+            )
+            .await?;
+
+        manager
+            .create_table(
+                Table::create()
+                    .table(Memberships::Table)
+                    .if_not_exists()
+                    .col(
+                        ColumnDef::new(Memberships::Id)
+                            .integer()
+                            .not_null()
+                            .auto_increment()
+                            .primary_key(),
+                    )
+                    .col(ColumnDef::new(Memberships::ObjectType).string().not_null())
+                    .col(ColumnDef::new(Memberships::ObjectId).string().not_null())
+                    .col(
+                        ColumnDef::new(Memberships::CollectionId)
+                            .string()
+                            .not_null(),
+                    )
+                    .col(
+                        ColumnDef::new(Memberships::CreatedAt)
+                            .timestamp_with_time_zone()
+                            .not_null(),
+                    )
+                    .to_owned(),
+            )
+            .await?;
+
+        manager
+            .create_table(
+                Table::create()
+                    .table(Tags::Table)
+                    .if_not_exists()
+                    .col(
+                        ColumnDef::new(Tags::Id)
+                            .integer()
+                            .not_null()
+                            .auto_increment()
+                            .primary_key(),
+                    )
+                    .col(ColumnDef::new(Tags::OwnerId).string().not_null())
+                    .col(ColumnDef::new(Tags::Name).string().not_null())
+                    .col(
+                        ColumnDef::new(Tags::CreatedAt)
+                            .timestamp_with_time_zone()
+                            .not_null(),
+                    )
+                    .to_owned(),
+            )
+            .await?;
+
+        manager
+            .create_table(
+                Table::create()
+                    .table(ObjectTags::Table)
+                    .if_not_exists()
+                    .col(
+                        ColumnDef::new(ObjectTags::Id)
+                            .integer()
+                            .not_null()
+                            .auto_increment()
+                            .primary_key(),
+                    )
+                    .col(ColumnDef::new(ObjectTags::ObjectType).string().not_null())
+                    .col(ColumnDef::new(ObjectTags::ObjectId).string().not_null())
+                    .col(ColumnDef::new(ObjectTags::TagId).integer().not_null())
+                    .col(
+                        ColumnDef::new(ObjectTags::CreatedAt)
+                            .timestamp_with_time_zone()
+                            .not_null(),
+                    )
+                    .to_owned(),
+            )
+            .await?;
+
+        manager
+            .create_index(
+                Index::create()
+                    .name("idx_memberships_lookup")
+                    .table(Memberships::Table)
+                    .col(Memberships::ObjectType)
+                    .col(Memberships::ObjectId)
+                    .col(Memberships::CollectionId)
+                    .to_owned(),
+            )
+            .await?;
+
+        manager
+            .create_index(
+                Index::create()
+                    .name("idx_object_tags_lookup")
+                    .table(ObjectTags::Table)
+                    .col(ObjectTags::ObjectType)
+                    .col(ObjectTags::ObjectId)
+                    .col(ObjectTags::TagId)
+                    .to_owned(),
+            )
+            .await?;
+
+        manager
+            .create_index(
+                Index::create()
+                    .name("idx_tags_owner_name")
+                    .table(Tags::Table)
+                    .col(Tags::OwnerId)
+                    .col(Tags::Name)
+                    .unique()
+                    .to_owned(),
+            )
+            .await?;
+
+        Ok(())
+    }
+
+    async fn down(&self, manager: &SchemaManager) -> Result<(), DbErr> {
+        manager
+            .drop_table(Table::drop().table(ObjectTags::Table).to_owned())
+            .await?;
+        manager
+            .drop_table(Table::drop().table(Tags::Table).to_owned())
+            .await?;
+        manager
+            .drop_table(Table::drop().table(Memberships::Table).to_owned())
+            .await?;
+        manager
+            .drop_table(Table::drop().table(Tracks::Table).to_owned())
+            .await?;
+        manager
+            .drop_table(Table::drop().table(Places::Table).to_owned())
+            .await?;
+        manager
+            .drop_table(Table::drop().table(Collections::Table).to_owned())
+            .await?;
+        manager
+            .drop_table(Table::drop().table(Metadata::Table).to_owned())
+            .await?;
+        Ok(())
+    }
+}
+
+#[derive(DeriveIden)]
+enum Metadata {
+    Table,
+    Key,
+    Value,
+}
+
+#[derive(DeriveIden)]
+enum Collections {
+    Table,
+    Id,
+    OwnerId,
+    Name,
+    Kind,
+    StartsAt,
+    EndsAt,
+    IsPublic,
+    CreatedAt,
+    UpdatedAt,
+}
+
+#[derive(DeriveIden)]
+enum Places {
+    Table,
+    Id,
+    OwnerId,
+    Name,
+    Category,
+    Notes,
+    Latitude,
+    Longitude,
+    VisitStart,
+    VisitEnd,
+    RelatedTrackId,
+    IsPublic,
+    CreatedAt,
+    UpdatedAt,
+}
+
+#[derive(DeriveIden)]
+enum Tracks {
+    Table,
+    Id,
+    OwnerId,
+    Title,
+    Notes,
+    GeometryJson,
+    MinLat,
+    MinLon,
+    MaxLat,
+    MaxLon,
+    DistanceM,
+    StartTime,
+    EndTime,
+    IsPublic,
+    CreatedAt,
+    UpdatedAt,
+}
+
+#[derive(DeriveIden)]
+enum Memberships {
+    Table,
+    Id,
+    ObjectType,
+    ObjectId,
+    CollectionId,
+    CreatedAt,
+}
+
+#[derive(DeriveIden)]
+enum Tags {
+    Table,
+    Id,
+    OwnerId,
+    Name,
+    CreatedAt,
+}
+
+#[derive(DeriveIden)]
+enum ObjectTags {
+    Table,
+    Id,
+    ObjectType,
+    ObjectId,
+    TagId,
+    CreatedAt,
+}
