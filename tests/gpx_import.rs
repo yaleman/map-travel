@@ -26,6 +26,33 @@ const SAMPLE_GPX: &str = r#"<?xml version="1.0" encoding="UTF-8"?>
 </gpx>
 "#;
 
+fn large_gpx() -> String {
+    let mut body = String::from(
+        r#"<?xml version="1.0" encoding="UTF-8"?>
+<gpx version="1.1" creator="map-travel-test" xmlns="http://www.topografix.com/GPX/1/1">
+  <trk>
+    <name>Big Track</name>
+    <trkseg>
+"#,
+    );
+
+    for index in 0..35_000 {
+        let latitude = -43.7219 + (index as f64 * 0.00001);
+        let longitude = 170.0937 + (index as f64 * 0.00001);
+        body.push_str(&format!(
+            "      <trkpt lat=\"{latitude:.5}\" lon=\"{longitude:.5}\"><time>2026-02-10T08:00:00Z</time></trkpt>\n"
+        ));
+    }
+
+    body.push_str(
+        r#"    </trkseg>
+  </trk>
+</gpx>
+"#,
+    );
+    body
+}
+
 async fn json_response(response: axum::response::Response) -> Value {
     let bytes = response
         .into_body()
@@ -126,4 +153,40 @@ async fn rejects_invalid_gpx_uploads_with_a_clear_client_error() {
             .expect("error field should be present")
             .contains("GPX")
     );
+}
+
+#[tokio::test]
+async fn imports_large_valid_gpx_uploads() {
+    let context = Arc::new(
+        AppContext::bootstrap(AppConfig::for_tests())
+            .await
+            .expect("test bootstrap should succeed"),
+    );
+    let router = build_router(context);
+
+    let large_gpx = large_gpx();
+    assert!(
+        large_gpx.len() > 2_000_000,
+        "test GPX should exceed multipart default"
+    );
+
+    let import_response = router
+        .oneshot(multipart_request(
+            "big-track.gpx",
+            "application/gpx+xml",
+            &large_gpx,
+        ))
+        .await
+        .expect("import request should succeed");
+
+    assert_eq!(import_response.status(), StatusCode::CREATED);
+    let import_json = json_response(import_response).await;
+    assert_eq!(
+        import_json["tracks"]
+            .as_array()
+            .expect("tracks array")
+            .len(),
+        1
+    );
+    assert_eq!(import_json["tracks"][0]["title"], "Big Track");
 }

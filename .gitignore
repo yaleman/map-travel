@@ -4,3 +4,4 @@
 *.sqlite
 /.playwright-cli
 /maps
+/output

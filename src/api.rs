@@ -3,7 +3,7 @@ use std::{io::BufReader, io::Cursor};
 
 use axum::{
     Json, Router,
-    extract::{Multipart, Query, State},
+    extract::{DefaultBodyLimit, Multipart, Query, State},
     http::StatusCode,
     routing::{get, post},
 };
@@ -22,12 +22,17 @@ use crate::{
     error::{AppError, AppResult},
 };
 
+const MAX_GPX_UPLOAD_BYTES: usize = 64 * 1024 * 1024;
+
 pub fn build_router(context: Arc<AppContext>) -> Router {
     Router::new()
         .route("/api/collections", post(create_collection))
         .route("/api/collections", get(list_collections))
         .route("/api/places", post(create_place))
-        .route("/api/tracks/import", post(import_tracks))
+        .route(
+            "/api/tracks/import",
+            post(import_tracks).layer(DefaultBodyLimit::max(MAX_GPX_UPLOAD_BYTES)),
+        )
         .route("/api/map-objects", get(list_map_objects))
         .merge(crate::maps_api::build_router())
         .with_state(context)
