@@ -11,7 +11,7 @@ use chrono::{DateTime, Utc};
 use geojson::Geometry;
 use sea_orm::{
     ActiveModelTrait, ActiveValue::Set, ColumnTrait, Condition, EntityTrait, QueryFilter,
-    QuerySelect, QueryTrait,
+    QuerySelect, QueryTrait, TransactionTrait,
 };
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
@@ -29,12 +29,18 @@ pub fn build_router(context: Arc<AppContext>) -> Router {
         .route("/api/collections", post(create_collection))
         .route("/api/collections", get(list_collections))
         .route("/api/places", post(create_place))
-        .route("/api/places/{place_id}", patch(update_place))
+        .route(
+            "/api/places/{place_id}",
+            patch(update_place).delete(delete_place),
+        )
         .route(
             "/api/tracks/import",
             post(import_tracks).layer(DefaultBodyLimit::max(MAX_GPX_UPLOAD_BYTES)),
         )
-        .route("/api/tracks/{track_id}", patch(update_track))
+        .route(
+            "/api/tracks/{track_id}",
+            patch(update_track).delete(delete_track),
+        )
         .route("/api/map-objects", get(list_map_objects))
         .merge(crate::maps_api::build_router())
         .with_state(context)
@@ -266,6 +272,24 @@ async fn update_place(
     }))
 }
 
+async fn delete_place(
+    State(context): State<Arc<AppContext>>,
+    Path(place_id): Path<String>,
+) -> AppResult<StatusCode> {
+    let transaction = context.db().begin().await?;
+
+    place::Entity::find_by_id(place_id.clone())
+        .one(&transaction)
+        .await?
+        .ok_or_else(|| AppError::InvalidRequest("place does not exist".to_owned()))?;
+
+    delete_object_links(&transaction, "place", &place_id).await?;
+    place::Entity::delete_by_id(place_id).exec(&transaction).await?;
+    transaction.commit().await?;
+
+    Ok(StatusCode::NO_CONTENT)
+}
+
 #[derive(Debug, Serialize)]
 struct ImportTracksResponse {
     tracks: Vec<TrackResponse>,
@@ -482,6 +506,58 @@ async fn update_track(
         start_time: updated.start_time,
         end_time: updated.end_time,
     }))
+}
+
+async fn delete_track(
+    State(context): State<Arc<AppContext>>,
+    Path(track_id): Path<String>,
+) -> AppResult<StatusCode> {
+    let transaction = context.db().begin().await?;
+
+    track::Entity::find_by_id(track_id.clone())
+        .one(&transaction)
+        .await?
+        .ok_or_else(|| AppError::InvalidRequest("track does not exist".to_owned()))?;
+
+    let now = Utc::now();
+    for related_place in place::Entity::find()
+        .filter(place::Column::RelatedTrackId.eq(track_id.clone()))
+        .all(&transaction)
+        .await?
+    {
+        let mut model: place::ActiveModel = related_place.into();
+        model.related_track_id = Set(None);
+        model.updated_at = Set(now);
+        model.update(&transaction).await?;
+    }
+
+    delete_object_links(&transaction, "track", &track_id).await?;
+    track::Entity::delete_by_id(track_id).exec(&transaction).await?;
+    transaction.commit().await?;
+
+    Ok(StatusCode::NO_CONTENT)
+}
+
+async fn delete_object_links<C>(
+    connection: &C,
+    object_type: &str,
+    object_id: &str,
+) -> AppResult<()>
+where
+    C: sea_orm::ConnectionTrait,
+{
+    membership::Entity::delete_many()
+        .filter(membership::Column::ObjectType.eq(object_type))
+        .filter(membership::Column::ObjectId.eq(object_id))
+        .exec(connection)
+        .await?;
+    object_tag::Entity::delete_many()
+        .filter(object_tag::Column::ObjectType.eq(object_type))
+        .filter(object_tag::Column::ObjectId.eq(object_id))
+        .exec(connection)
+        .await?;
+
+    Ok(())
 }
 
 fn place_condition(query: &MapObjectsQuery) -> AppResult<Condition> {

@@ -311,3 +311,153 @@ async fn updates_imported_track_fields() {
     assert_eq!(updated["title"], "Renamed Track");
     assert_eq!(updated["notes"], "Updated notes");
 }
+
+#[tokio::test]
+async fn deletes_places_and_removes_them_from_view_queries() {
+    let context = Arc::new(
+        AppContext::bootstrap(AppConfig::for_tests())
+            .await
+            .expect("test bootstrap should succeed"),
+    );
+    let router = build_router(context);
+
+    let collection_response = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/collections")
+                .header("content-type", mime::APPLICATION_JSON.as_ref())
+                .body(Body::from(
+                    json!({
+                        "name": "Delete Test",
+                        "kind": "trip",
+                        "starts_at": null,
+                        "ends_at": null
+                    })
+                    .to_string(),
+                ))
+                .expect("collection request should build"),
+        )
+        .await
+        .expect("collection request should succeed");
+    let collection = json_response(collection_response).await;
+    let collection_id = collection["id"].as_str().expect("collection id");
+
+    let create_response = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/places")
+                .header("content-type", mime::APPLICATION_JSON.as_ref())
+                .body(Body::from(
+                    json!({
+                        "name": "Disposable Place",
+                        "category": "lookout",
+                        "notes": "Delete me",
+                        "latitude": -27.4698,
+                        "longitude": 153.0251,
+                        "visit_start": null,
+                        "visit_end": null,
+                        "collection_ids": [collection_id],
+                        "tag_names": ["delete-test"]
+                    })
+                    .to_string(),
+                ))
+                .expect("place request should build"),
+        )
+        .await
+        .expect("place request should succeed");
+    let created = json_response(create_response).await;
+    let place_id = created["id"].as_str().expect("place id");
+
+    let delete_response = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("DELETE")
+                .uri(format!("/api/places/{place_id}"))
+                .body(Body::empty())
+                .expect("delete request should build"),
+        )
+        .await
+        .expect("delete request should succeed");
+    assert_eq!(delete_response.status(), StatusCode::NO_CONTENT);
+
+    let map_objects = router
+        .oneshot(
+            Request::builder()
+                .uri(format!(
+                    "/api/map-objects?min_lat=-28.0&min_lon=152.0&max_lat=-27.0&max_lon=154.0&object_type=place&collection_id={collection_id}"
+                ))
+                .body(Body::empty())
+                .expect("map objects request should build"),
+        )
+        .await
+        .expect("map objects request should succeed");
+    assert_eq!(map_objects.status(), StatusCode::OK);
+    let payload = json_response(map_objects).await;
+    assert!(
+        payload["places"]
+            .as_array()
+            .expect("places array")
+            .is_empty()
+    );
+}
+
+#[tokio::test]
+async fn deletes_tracks_and_removes_them_from_view_queries() {
+    let context = Arc::new(
+        AppContext::bootstrap(AppConfig::for_tests())
+            .await
+            .expect("test bootstrap should succeed"),
+    );
+    let router = build_router(context);
+
+    let import_response = router
+        .clone()
+        .oneshot(multipart_request(
+            "mueller-hut.gpx",
+            "application/gpx+xml",
+            SAMPLE_GPX,
+        ))
+        .await
+        .expect("import request should succeed");
+    let imported = json_response(import_response).await;
+    let track_id = imported["tracks"][0]["id"]
+        .as_str()
+        .expect("track id")
+        .to_owned();
+
+    let delete_response = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("DELETE")
+                .uri(format!("/api/tracks/{track_id}"))
+                .body(Body::empty())
+                .expect("delete request should build"),
+        )
+        .await
+        .expect("delete request should succeed");
+    assert_eq!(delete_response.status(), StatusCode::NO_CONTENT);
+
+    let map_objects = router
+        .oneshot(
+            Request::builder()
+                .uri("/api/map-objects?min_lat=-44.0&min_lon=169.0&max_lat=-43.0&max_lon=171.0&object_type=track")
+                .body(Body::empty())
+                .expect("map objects request should build"),
+        )
+        .await
+        .expect("map objects request should succeed");
+    assert_eq!(map_objects.status(), StatusCode::OK);
+    let payload = json_response(map_objects).await;
+    assert!(
+        payload["tracks"]
+            .as_array()
+            .expect("tracks array")
+            .is_empty()
+    );
+}

@@ -37,6 +37,7 @@ test("renames places and tracks from the drawer", async ({ page, request }) => {
 	const detailPanel = page.locator("#detail-panel");
 	const refreshButton = page.getByRole("button", { name: "Refresh" });
 
+	await refreshButton.click();
 	await expect(detailPanel).toContainText("Editable Place");
 	await detailPanel.getByRole("button", { name: /Editable Place/ }).click();
 	await page.getByRole("button", { name: "Edit" }).click();
@@ -94,4 +95,87 @@ test("renames places and tracks from the drawer", async ({ page, request }) => {
 	expect(trackPatch.status()).toBe(200);
 	await expect(detailPanel).toContainText("Renamed Track");
 	await expect(detailPanel).toContainText("Updated track note");
+});
+
+test("deletes places and tracks from the edit flow after confirmation", async ({
+	page,
+	request,
+}) => {
+	const createPlaceResponse = await request.post("/api/places", {
+		data: {
+			name: "Disposable Place",
+			category: "camp",
+			notes: "Delete me",
+			latitude: -27.4698,
+			longitude: 153.0251,
+			visit_start: null,
+			visit_end: null,
+			collection_ids: [],
+			tag_names: [],
+		},
+	});
+	expect(createPlaceResponse.ok()).toBeTruthy();
+
+	await page.goto("/");
+
+	const detailPanel = page.locator("#detail-panel");
+	const refreshButton = page.getByRole("button", { name: "Refresh" });
+
+	await refreshButton.click();
+	await expect(detailPanel).toContainText("Disposable Place");
+	await detailPanel.getByRole("button", { name: /Disposable Place/ }).click();
+	await page.getByRole("button", { name: "Edit" }).click();
+	await page.locator("#place-edit-form").getByRole("button", { name: "Delete" }).click();
+	await expect(detailPanel).toContainText("Delete this place from the database?");
+
+	const [placeDelete] = await Promise.all([
+		page.waitForResponse(
+			(response) =>
+				response.url().includes("/api/places/") &&
+				response.request().method() === "DELETE",
+		),
+		page.getByRole("button", { name: "Confirm" }).click(),
+	]);
+	expect(placeDelete.status()).toBe(204);
+	await expect(detailPanel).not.toContainText("Disposable Place");
+
+	await page.locator("#gpx-file").setInputFiles({
+		name: "disposable-track.gpx",
+		mimeType: "application/gpx+xml",
+		buffer: Buffer.from(BRISBANE_TRACK_GPX),
+	});
+	const [trackImport] = await Promise.all([
+		page.waitForResponse(
+			(response) =>
+				response.url().endsWith("/api/tracks/import") &&
+				response.request().method() === "POST",
+		),
+		page.getByRole("button", { name: "Import GPX" }).click(),
+	]);
+	expect(trackImport.status()).toBe(201);
+
+	await page.locator("#map").click({
+		position: {
+			x: 24,
+			y: 180,
+		},
+	});
+	await refreshButton.click();
+
+	await expect(detailPanel).toContainText("Editable Track");
+	await detailPanel.getByRole("button", { name: /Editable Track/ }).click();
+	await page.getByRole("button", { name: "Edit" }).click();
+	await page.locator("#track-edit-form").getByRole("button", { name: "Delete" }).click();
+	await expect(detailPanel).toContainText("Delete this track from the database?");
+
+	const [trackDelete] = await Promise.all([
+		page.waitForResponse(
+			(response) =>
+				response.url().includes("/api/tracks/") &&
+				response.request().method() === "DELETE",
+		),
+		page.getByRole("button", { name: "Confirm" }).click(),
+	]);
+	expect(trackDelete.status()).toBe(204);
+	await expect(detailPanel).not.toContainText("Editable Track");
 });

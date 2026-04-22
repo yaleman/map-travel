@@ -5,6 +5,11 @@ import maplibregl, {
 } from "maplibre-gl";
 import "maplibre-gl/dist/maplibre-gl.css";
 import { displayTrackColor } from "./track-display";
+import { filterVisibleTracks } from "./track-visibility";
+import {
+	createDebouncedViewportFragmentUpdater,
+	writeViewportFragment,
+} from "./viewport-fragment";
 import { sortViewportObjectsByDistance } from "./viewport-objects";
 import "./styles.css";
 
@@ -375,8 +380,11 @@ let areaExtractForm: AreaExtractFormState = {
 	maxZoom: "8",
 };
 let selectedMapObject: SelectedMapObjectState | null = null;
+const hiddenTrackIds = new Set<string>();
 let currentView: ViewMode = getViewFromLocation();
 let settingsRefreshTimer: number | null = null;
+const scheduleViewportFragmentUpdate =
+	createDebouncedViewportFragmentUpdater(writeViewportFragment, 250);
 
 const settingsState: SettingsState = {
 	isBusy: false,
@@ -412,6 +420,13 @@ async function bootstrap(): Promise<void> {
 	});
 	workspaceMap.on("moveend", () => {
 		void refreshMapData();
+	});
+	workspaceMap.on("move", () => {
+		scheduleViewportFragmentUpdate({
+			latitude: workspaceMap.getCenter().lat,
+			longitude: workspaceMap.getCenter().lng,
+			zoom: workspaceMap.getZoom(),
+		});
 	});
 	workspaceMap.on("click", (event) => {
 		if (addPlaceMode) {
@@ -775,7 +790,11 @@ function updateWorkspaceOverlaySources(): void {
 	const trackSource = workspaceMap.getSource("tracks");
 	const placeSource = workspaceMap.getSource("places");
 	if (trackSource?.type === "geojson") {
-		trackSource.setData(buildTrackFeatureCollection(lastData.tracks));
+		trackSource.setData(
+			buildTrackFeatureCollection(
+				filterVisibleTracks(lastData.tracks, hiddenTrackIds),
+			),
+		);
 	}
 	if (placeSource?.type === "geojson") {
 		placeSource.setData(buildPlaceFeatureCollection(lastData.places));
@@ -801,6 +820,9 @@ function renderTrackDetail(track: TrackRecord): void {
       <h2>${escapeHtml(track.title ?? "Untitled track")}</h2>
       <div class="inline-actions">
         <button id="edit-track" class="secondary" type="button">Edit</button>
+        <button id="toggle-track-visibility" class="secondary" type="button">${
+					hiddenTrackIds.has(track.id) ? "Show on map" : "Hide from map"
+				}</button>
       </div>
       <div class="meta-row">
         <span class="meta-pill">Track</span>
@@ -817,6 +839,18 @@ function renderTrackDetail(track: TrackRecord): void {
 	must<HTMLButtonElement>("#edit-track").addEventListener("click", () => {
 		openTrackEditor(track);
 	});
+	must<HTMLButtonElement>("#toggle-track-visibility").addEventListener(
+		"click",
+		() => {
+			if (hiddenTrackIds.has(track.id)) {
+				hiddenTrackIds.delete(track.id);
+			} else {
+				hiddenTrackIds.add(track.id);
+			}
+			updateWorkspaceOverlaySources();
+			renderTrackDetail(track);
+		},
+	);
 }
 
 function renderPlaceDetail(place: PlaceRecord): void {
@@ -1038,7 +1072,7 @@ function openPlaceDrawer(place: PendingPlaceState): void {
 	});
 }
 
-function openTrackEditor(track: TrackRecord): void {
+function openTrackEditor(track: TrackRecord, confirmDelete = false): void {
 	selectedMapObject = {
 		id: track.id,
 		objectType: "track",
@@ -1059,12 +1093,25 @@ function openTrackEditor(track: TrackRecord): void {
       <div class="inline-actions">
         <button type="submit">Save</button>
         <button id="cancel-track-edit" class="secondary" type="button">Cancel</button>
+        <button id="delete-track" class="secondary danger" type="button">Delete</button>
       </div>
+      ${
+				confirmDelete
+					? `<div class="status warn">
+          Delete this track from the database?
+          <div class="inline-actions section-space">
+            <button id="confirm-track-delete" class="danger" type="button">Confirm</button>
+            <button id="keep-track" class="secondary" type="button">Keep track</button>
+          </div>
+        </div>`
+					: ""
+			}
     </form>
   `;
 
 	const form = must<HTMLFormElement>("#track-edit-form");
 	const cancelButton = must<HTMLButtonElement>("#cancel-track-edit");
+	const deleteButton = must<HTMLButtonElement>("#delete-track");
 
 	form.addEventListener("submit", async (event) => {
 		event.preventDefault();
@@ -1080,9 +1127,28 @@ function openTrackEditor(track: TrackRecord): void {
 	cancelButton.addEventListener("click", () => {
 		renderTrackDetail(track);
 	});
+
+	deleteButton.addEventListener("click", () => {
+		openTrackEditor(track, true);
+	});
+
+	if (confirmDelete) {
+		must<HTMLButtonElement>("#keep-track").addEventListener("click", () => {
+			openTrackEditor(track, false);
+		});
+		must<HTMLButtonElement>("#confirm-track-delete").addEventListener(
+			"click",
+			async () => {
+				await deleteJson(`/api/tracks/${track.id}`);
+				hiddenTrackIds.delete(track.id);
+				await refreshMapData();
+				renderDrawerEmpty();
+			},
+		);
+	}
 }
 
-function openPlaceEditor(place: PlaceRecord): void {
+function openPlaceEditor(place: PlaceRecord, confirmDelete = false): void {
 	selectedMapObject = {
 		id: place.id,
 		objectType: "place",
@@ -1107,12 +1173,25 @@ function openPlaceEditor(place: PlaceRecord): void {
       <div class="inline-actions">
         <button type="submit">Save</button>
         <button id="cancel-place-edit" class="secondary" type="button">Cancel</button>
+        <button id="delete-place" class="secondary danger" type="button">Delete</button>
       </div>
+      ${
+				confirmDelete
+					? `<div class="status warn">
+          Delete this place from the database?
+          <div class="inline-actions section-space">
+            <button id="confirm-place-delete" class="danger" type="button">Confirm</button>
+            <button id="keep-place" class="secondary" type="button">Keep place</button>
+          </div>
+        </div>`
+					: ""
+			}
     </form>
   `;
 
 	const form = must<HTMLFormElement>("#place-edit-form");
 	const cancelButton = must<HTMLButtonElement>("#cancel-place-edit");
+	const deleteButton = must<HTMLButtonElement>("#delete-place");
 
 	form.addEventListener("submit", async (event) => {
 		event.preventDefault();
@@ -1129,6 +1208,24 @@ function openPlaceEditor(place: PlaceRecord): void {
 	cancelButton.addEventListener("click", () => {
 		renderPlaceDetail(place);
 	});
+
+	deleteButton.addEventListener("click", () => {
+		openPlaceEditor(place, true);
+	});
+
+	if (confirmDelete) {
+		must<HTMLButtonElement>("#keep-place").addEventListener("click", () => {
+			openPlaceEditor(place, false);
+		});
+		must<HTMLButtonElement>("#confirm-place-delete").addEventListener(
+			"click",
+			async () => {
+				await deleteJson(`/api/places/${place.id}`);
+				await refreshMapData();
+				renderDrawerEmpty();
+			},
+		);
+	}
 }
 
 async function refreshSettingsData(showBusy = true): Promise<void> {
@@ -1982,6 +2079,15 @@ async function patchJson<T>(url: string, payload: unknown): Promise<T> {
 		throw await buildHttpError(response);
 	}
 	return (await response.json()) as T;
+}
+
+async function deleteJson(url: string): Promise<void> {
+	const response = await fetch(url, {
+		method: "DELETE",
+	});
+	if (!response.ok) {
+		throw await buildHttpError(response);
+	}
 }
 
 async function buildHttpError(response: Response): Promise<Error> {

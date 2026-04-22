@@ -198,6 +198,16 @@ button.secondary {
   color: var(--ink);
 }
 
+button.danger {
+  background: #bb5f3a;
+  color: white;
+}
+
+button.secondary.danger {
+  background: rgba(187, 95, 58, 0.14);
+  color: var(--accent-dark);
+}
+
 button.secondary.active {
   background: var(--green);
   color: white;
