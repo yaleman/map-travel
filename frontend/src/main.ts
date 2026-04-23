@@ -616,6 +616,20 @@ function ensureWorkspaceOverlayLayers(): void {
 		});
 	}
 
+	if (!workspaceMap.getSource("selected-place")) {
+		workspaceMap.addSource("selected-place", {
+			type: "geojson",
+			data: emptyFeatureCollection(),
+		});
+	}
+
+	if (!workspaceMap.getSource("selected-track")) {
+		workspaceMap.addSource("selected-track", {
+			type: "geojson",
+			data: emptyFeatureCollection(),
+		});
+	}
+
 	if (!workspaceMap.getLayer("tracks-line")) {
 		workspaceMap.addLayer({
 			id: "tracks-line",
@@ -658,6 +672,59 @@ function ensureWorkspaceOverlayLayers(): void {
 			if (place) {
 				renderPlaceDetail(place);
 			}
+		});
+	}
+
+	if (!workspaceMap.getLayer("selected-track-casing")) {
+		workspaceMap.addLayer({
+			id: "selected-track-casing",
+			type: "line",
+			source: "selected-track",
+			paint: {
+				"line-color": "#fcfbf8",
+				"line-width": 11,
+				"line-opacity": 0.95,
+			},
+		});
+	}
+
+	if (!workspaceMap.getLayer("selected-track-line")) {
+		workspaceMap.addLayer({
+			id: "selected-track-line",
+			type: "line",
+			source: "selected-track",
+			paint: {
+				"line-color": "#bb5f3a",
+				"line-width": 7,
+				"line-opacity": 1,
+			},
+		});
+	}
+
+	if (!workspaceMap.getLayer("selected-place-halo")) {
+		workspaceMap.addLayer({
+			id: "selected-place-halo",
+			type: "circle",
+			source: "selected-place",
+			paint: {
+				"circle-radius": 14,
+				"circle-color": "#fcfbf8",
+				"circle-opacity": 0.96,
+			},
+		});
+	}
+
+	if (!workspaceMap.getLayer("selected-place-circle")) {
+		workspaceMap.addLayer({
+			id: "selected-place-circle",
+			type: "circle",
+			source: "selected-place",
+			paint: {
+				"circle-radius": 9,
+				"circle-color": "#bb5f3a",
+				"circle-stroke-width": 2,
+				"circle-stroke-color": "#fcfbf8",
+			},
 		});
 	}
 }
@@ -730,10 +797,23 @@ function updateWorkspaceOverlaySources(): void {
 	if (placeSource?.type === "geojson") {
 		placeSource.setData(buildPlaceFeatureCollection(lastData.places));
 	}
+	updateWorkspaceSelectionSources();
+}
+
+function updateWorkspaceSelectionSources(): void {
+	const selectedTrackSource = workspaceMap.getSource("selected-track");
+	const selectedPlaceSource = workspaceMap.getSource("selected-place");
+	if (selectedTrackSource?.type === "geojson") {
+		selectedTrackSource.setData(buildSelectedTrackFeatureCollection());
+	}
+	if (selectedPlaceSource?.type === "geojson") {
+		selectedPlaceSource.setData(buildSelectedPlaceFeatureCollection());
+	}
 }
 
 function renderDrawerEmpty(): void {
 	selectedMapObject = null;
+	updateWorkspaceSelectionSources();
 	renderViewportObjectList();
 }
 
@@ -746,6 +826,7 @@ function renderTrackDetail(track: TrackRecord): void {
 		id: track.id,
 		objectType: "track",
 	};
+	updateWorkspaceSelectionSources();
 	detailPanel.innerHTML = `
     <div class="drawer-card">
       <h2>${escapeHtml(track.title ?? "Untitled track")}</h2>
@@ -789,6 +870,7 @@ function renderPlaceDetail(place: PlaceRecord): void {
 		id: place.id,
 		objectType: "place",
 	};
+	updateWorkspaceSelectionSources();
 	detailPanel.innerHTML = `
     <div class="drawer-card">
       <h2>${escapeHtml(place.name)}</h2>
@@ -836,22 +918,26 @@ function renderViewportObjectList(): void {
     <div class="drawer-card">
       <h2>In View</h2>
       <div class="viewport-object-list">
-        ${items
+		${items
 					.map(
-						(item) => `
+						(item) => {
+							const isHiddenTrack =
+								item.objectType === "track" && hiddenTrackIds.has(item.id);
+							return `
               <button
-                class="viewport-object-row secondary"
+                class="viewport-object-row secondary${isHiddenTrack ? " viewport-object-row-hidden" : ""}"
                 type="button"
                 data-object-id="${item.id}"
                 data-object-type="${item.objectType}"
               >
                 <span class="viewport-object-copy">
-                  <strong>${escapeHtml(item.title)}</strong>
+                  <strong class="${isHiddenTrack ? "viewport-object-title-hidden" : ""}">${escapeHtml(item.title)}</strong>
                   <span>${item.objectType === "track" ? "Track" : "Place"}</span>
                 </span>
                 <span class="viewport-object-distance">${escapeHtml(formatDistance(item.distanceMeters))}</span>
               </button>
-            `,
+            `;
+						},
 					)
 					.join("")}
       </div>
@@ -908,12 +994,14 @@ function syncDrawerSelection(): void {
 		}
 	}
 	selectedMapObject = null;
+	updateWorkspaceSelectionSources();
 	renderViewportObjectList();
 }
 
 function openPlaceDrawer(place: PendingPlaceState): void {
 	pendingPlace = place;
 	selectedMapObject = null;
+	updateWorkspaceSelectionSources();
 	addPlaceMode = true;
 	updateModeUi();
 	detailPanel.innerHTML = `
@@ -1012,6 +1100,7 @@ function openTrackEditor(track: TrackRecord, confirmDelete = false): void {
 		id: track.id,
 		objectType: "track",
 	};
+	updateWorkspaceSelectionSources();
 	detailPanel.innerHTML = `
     <form id="track-edit-form" class="drawer-card">
       <h2>Edit track</h2>
@@ -1088,6 +1177,7 @@ function openPlaceEditor(place: PlaceRecord, confirmDelete = false): void {
 		id: place.id,
 		objectType: "place",
 	};
+	updateWorkspaceSelectionSources();
 	detailPanel.innerHTML = `
     <form id="place-edit-form" class="drawer-card">
       <h2>Edit place</h2>
@@ -1884,6 +1974,20 @@ function buildTrackFeatureCollection(
 	};
 }
 
+function buildSelectedTrackFeatureCollection(): GeoJSON.FeatureCollection {
+	if (!selectedMapObject || selectedMapObject.objectType !== "track") {
+		return emptyFeatureCollection();
+	}
+	if (hiddenTrackIds.has(selectedMapObject.id)) {
+		return emptyFeatureCollection();
+	}
+	const track = lastData.tracks.find((item) => item.id === selectedMapObject.id);
+	if (!track) {
+		return emptyFeatureCollection();
+	}
+	return buildTrackFeatureCollection([track]);
+}
+
 function buildPlaceFeatureCollection(
 	places: PlaceRecord[],
 ): GeoJSON.FeatureCollection {
@@ -1901,6 +2005,17 @@ function buildPlaceFeatureCollection(
 			},
 		})),
 	};
+}
+
+function buildSelectedPlaceFeatureCollection(): GeoJSON.FeatureCollection {
+	if (!selectedMapObject || selectedMapObject.objectType !== "place") {
+		return emptyFeatureCollection();
+	}
+	const place = lastData.places.find((item) => item.id === selectedMapObject.id);
+	if (!place) {
+		return emptyFeatureCollection();
+	}
+	return buildPlaceFeatureCollection([place]);
 }
 
 function emptyFeatureCollection(): GeoJSON.FeatureCollection {

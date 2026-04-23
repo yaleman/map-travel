@@ -395,6 +395,11 @@ button.secondary.active {
 	color: var(--ink);
 }
 
+.viewport-object-title-hidden {
+	color: var(--muted);
+	font-weight: 600;
+}
+
 .viewport-object-copy span,
 .viewport-object-distance {
 	color: var(--muted);
