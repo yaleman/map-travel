@@ -124,21 +124,15 @@ body {
 	display: none;
 }
 
-.workspace-sidebar-rail {
-	position: absolute;
-	top: 26px;
-	right: -18px;
-	display: flex;
-	justify-content: flex-end;
-	pointer-events: none;
-	z-index: 3;
-}
-
 .sidebar-toggle {
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
 	width: 40px;
 	height: 40px;
 	padding: 0;
 	border-radius: 999px;
+	line-height: 1;
 }
 
 .workspace-sidebar-collapse {
@@ -151,7 +145,11 @@ body {
 
 .workspace-sidebar-expand {
 	display: none;
-	pointer-events: auto;
+	position: absolute;
+	top: 26px;
+	right: -18px;
+	z-index: 3;
+	box-shadow: var(--shadow);
 }
 
 .shell.sidebar-collapsed .workspace-sidebar-expand {
