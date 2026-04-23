@@ -117,6 +117,7 @@ body {
 .workspace-sidebar {
 	position: relative;
 	min-width: 0;
+	overflow: visible;
 }
 
 .workspace-sidebar-content[hidden] {
@@ -125,13 +126,12 @@ body {
 
 .workspace-sidebar-rail {
 	position: absolute;
-	top: 16px;
-	left: 0;
-	right: 0;
+	top: 26px;
+	right: -18px;
 	display: flex;
-	justify-content: center;
+	justify-content: flex-end;
 	pointer-events: none;
-	z-index: 2;
+	z-index: 3;
 }
 
 .sidebar-toggle {
@@ -156,10 +156,6 @@ body {
 
 .shell.sidebar-collapsed .workspace-sidebar-expand {
 	display: inline-flex;
-}
-
-.shell.sidebar-collapsed .workspace-sidebar {
-	overflow: hidden;
 }
 
 .shell.sidebar-collapsed .workspace-sidebar-collapse {
