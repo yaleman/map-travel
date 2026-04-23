@@ -124,6 +124,20 @@ body {
 	display: none;
 }
 
+.workspace-sidebar-collapsed-tools[hidden] {
+	display: none;
+}
+
+.workspace-sidebar-collapsed-tools {
+	position: absolute;
+	top: 78px;
+	left: 50%;
+	z-index: 2;
+	display: grid;
+	gap: 10px;
+	transform: translateX(-50%);
+}
+
 .sidebar-toggle {
 	display: inline-flex;
 	align-items: center;
@@ -154,6 +168,10 @@ body {
 
 .shell.sidebar-collapsed .workspace-sidebar-expand {
 	display: inline-flex;
+}
+
+.shell.sidebar-collapsed .workspace-sidebar-collapsed-tools {
+	display: grid;
 }
 
 .shell.sidebar-collapsed .workspace-sidebar-collapse {

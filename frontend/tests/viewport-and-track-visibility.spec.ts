@@ -139,10 +139,14 @@ test("simplifies the workspace sidebar and persists collapsed state", async ({
 	await expect(
 		page.getByRole("button", { name: "Expand sidebar" }),
 	).toBeVisible();
+	await expect(page.locator("#collapsed-add-place")).toBeVisible();
+	await expect(page.locator("#collapsed-open-settings")).toBeVisible();
 
 	await page.reload();
 	await expect(page.locator("#workspace-shell")).toHaveClass(/sidebar-collapsed/);
 	await expect(sidebarContent).toBeHidden();
+	await expect(page.locator("#collapsed-add-place")).toBeVisible();
+	await expect(page.locator("#collapsed-open-settings")).toBeVisible();
 
 	await page.getByRole("button", { name: "Expand sidebar" }).click();
 	await expect(page.locator("#workspace-shell")).not.toHaveClass(

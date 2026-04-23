@@ -185,6 +185,9 @@ const workspaceScreen = must<HTMLElement>("#workspace-screen");
 const workspaceShell = must<HTMLElement>("#workspace-shell");
 const workspaceSidebar = must<HTMLElement>("#workspace-sidebar");
 const workspaceSidebarContent = must<HTMLElement>("#workspace-sidebar-content");
+const workspaceSidebarCollapsedTools = must<HTMLElement>(
+	"#workspace-sidebar-collapsed-tools",
+);
 const settingsScreen = must<HTMLElement>("#settings-screen");
 const detailPanel = must<HTMLDivElement>("#detail-panel");
 const importForm = must<HTMLFormElement>("#import-form");
@@ -199,10 +202,14 @@ const filterTag = must<HTMLInputElement>("#filter-tag");
 const filterStartsAfter = must<HTMLInputElement>("#filter-starts-after");
 const filterEndsBefore = must<HTMLInputElement>("#filter-ends-before");
 const toggleAddPlaceButton = must<HTMLButtonElement>("#toggle-add-place");
+const collapsedAddPlaceButton = must<HTMLButtonElement>("#collapsed-add-place");
 const refreshMapButton = must<HTMLButtonElement>("#refresh-map");
 const toggleSidebarButton = must<HTMLButtonElement>("#toggle-sidebar");
 const expandSidebarButton = must<HTMLButtonElement>("#expand-sidebar");
 const openSettingsButton = must<HTMLButtonElement>("#open-settings");
+const collapsedOpenSettingsButton = must<HTMLButtonElement>(
+	"#collapsed-open-settings",
+);
 const closeSettingsButton = must<HTMLButtonElement>("#close-settings");
 const openGoogleMapsLink = must<HTMLAnchorElement>("#open-google-maps");
 const settingsContent = must<HTMLDivElement>("#settings-content");
@@ -336,6 +343,10 @@ function applyWorkspaceSidebarState(): void {
 		workspaceSidebarCollapsed,
 	);
 	workspaceSidebarContent.toggleAttribute("hidden", workspaceSidebarCollapsed);
+	workspaceSidebarCollapsedTools.toggleAttribute(
+		"hidden",
+		!workspaceSidebarCollapsed,
+	);
 	toggleSidebarButton.setAttribute(
 		"aria-expanded",
 		String(!workspaceSidebarCollapsed),
@@ -344,6 +355,17 @@ function applyWorkspaceSidebarState(): void {
 		"aria-expanded",
 		String(!workspaceSidebarCollapsed),
 	);
+}
+
+function toggleAddPlaceMode(): void {
+	addPlaceMode = !addPlaceMode;
+	pendingPlace = null;
+	updateModeUi();
+	if (!addPlaceMode) {
+		renderDrawerEmpty();
+	} else {
+		updateDrawerMessage("Click on the map to drop a new place.");
+	}
 }
 
 function setWorkspaceSidebarCollapsed(collapsed: boolean): void {
@@ -409,16 +431,8 @@ function wireEventHandlers(): void {
 		await refreshMapData();
 	});
 
-	toggleAddPlaceButton.addEventListener("click", () => {
-		addPlaceMode = !addPlaceMode;
-		pendingPlace = null;
-		updateModeUi();
-		if (!addPlaceMode) {
-			renderDrawerEmpty();
-		} else {
-			updateDrawerMessage("Click on the map to drop a new place.");
-		}
-	});
+	toggleAddPlaceButton.addEventListener("click", toggleAddPlaceMode);
+	collapsedAddPlaceButton.addEventListener("click", toggleAddPlaceMode);
 
 	refreshMapButton.addEventListener("click", async () => {
 		await refreshMapData();
@@ -433,6 +447,9 @@ function wireEventHandlers(): void {
 	});
 
 	openSettingsButton.addEventListener("click", async () => {
+		await navigateTo("settings");
+	});
+	collapsedOpenSettingsButton.addEventListener("click", async () => {
 		await navigateTo("settings");
 	});
 
@@ -1847,6 +1864,7 @@ function updateModeUi(): void {
 	toggleAddPlaceButton.textContent = addPlaceMode
 		? "Place mode on"
 		: "Add place";
+	collapsedAddPlaceButton.classList.toggle("active", addPlaceMode);
 }
 
 function buildTrackFeatureCollection(
