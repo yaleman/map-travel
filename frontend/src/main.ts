@@ -12,7 +12,10 @@ import {
 	parseViewportFragment,
 	writeViewportFragment,
 } from "./viewport-fragment";
-import { sortViewportObjectsByDistance } from "./viewport-objects";
+import {
+	filterViewportObjects,
+	sortViewportObjectsByDistance,
+} from "./viewport-objects";
 import {
 	readWorkspaceSidebarCollapsed,
 	writeWorkspaceSidebarCollapsed,
@@ -213,6 +216,8 @@ const collapsedOpenSettingsButton = must<HTMLButtonElement>(
 );
 const closeSettingsButton = must<HTMLButtonElement>("#close-settings");
 const openGoogleMapsLink = must<HTMLAnchorElement>("#open-google-maps");
+const rightPanelSearchForm = must<HTMLFormElement>("#right-panel-search-form");
+const rightPanelSearchInput = must<HTMLInputElement>("#right-panel-search");
 const settingsContent = must<HTMLDivElement>("#settings-content");
 const settingsMapDetail = must<HTMLSpanElement>("#settings-map-detail");
 
@@ -234,6 +239,7 @@ let workspaceMap: MapGL;
 let settingsMap: MapGL | null = null;
 let collections: CollectionRecord[] = [];
 let lastData: MapObjectsResponse = { places: [], tracks: [] };
+let globalSearchResults: MapObjectsResponse | null = null;
 let addPlaceMode = false;
 let pendingPlace: PendingPlaceState | null = null;
 let areaSelectionMode = false;
@@ -437,6 +443,32 @@ function wireEventHandlers(): void {
 
 	refreshMapButton.addEventListener("click", async () => {
 		await refreshMapData();
+	});
+
+	rightPanelSearchInput.addEventListener("input", () => {
+		globalSearchResults = null;
+		pendingPlace = null;
+		selectedMapObject = null;
+		updateWorkspaceSelectionSources();
+		renderViewportObjectList();
+	});
+
+	rightPanelSearchForm.addEventListener("submit", async (event) => {
+		event.preventDefault();
+		const query = rightPanelSearchInput.value.trim();
+		if (!query) {
+			globalSearchResults = null;
+			renderViewportObjectList();
+			return;
+		}
+		const params = new URLSearchParams({ query });
+		globalSearchResults = await fetchJson<MapObjectsResponse>(
+			`/api/search?${params.toString()}`,
+		);
+		pendingPlace = null;
+		selectedMapObject = null;
+		updateWorkspaceSelectionSources();
+		renderGlobalSearchResults();
 	});
 
 	toggleSidebarButton.addEventListener("click", () => {
@@ -646,7 +678,7 @@ function ensureWorkspaceOverlayLayers(): void {
 			const feature = event.features?.[0];
 			if (!feature) return;
 			const trackId = String(feature.properties?.id ?? "");
-			const track = lastData.tracks.find((item) => item.id === trackId);
+			const track = findTrackById(trackId);
 			if (track) {
 				renderTrackDetail(track);
 			}
@@ -669,7 +701,7 @@ function ensureWorkspaceOverlayLayers(): void {
 			const feature = event.features?.[0];
 			if (!feature) return;
 			const placeId = String(feature.properties?.id ?? "");
-			const place = lastData.places.find((item) => item.id === placeId);
+			const place = findPlaceById(placeId);
 			if (place) {
 				renderPlaceDetail(place);
 			}
@@ -897,20 +929,46 @@ function renderPlaceDetail(place: PlaceRecord): void {
 }
 
 function renderViewportObjectList(): void {
+	const filtered = filterViewportObjects(
+		rightPanelSearchInput.value,
+		lastData.tracks,
+		lastData.places,
+	);
+	const emptyMessage = rightPanelSearchInput.value.trim()
+		? "No in-view places or tracks match this search."
+		: "No places or tracks are currently in view.";
+	renderObjectList("In View", filtered, emptyMessage, false);
+}
+
+function renderGlobalSearchResults(): void {
+	renderObjectList(
+		"Search Results",
+		globalSearchResults ?? { places: [], tracks: [] },
+		"No global places or tracks match this search.",
+		true,
+	);
+}
+
+function renderObjectList(
+	heading: string,
+	data: MapObjectsResponse,
+	emptyMessage: string,
+	focusOnSelect: boolean,
+): void {
 	const center = workspaceMap.getCenter();
 	const items = sortViewportObjectsByDistance(
 		{
 			latitude: center.lat,
 			longitude: center.lng,
 		},
-		lastData.tracks,
-		lastData.places,
+		data.tracks,
+		data.places,
 	);
 
 	if (items.length === 0) {
 		detailPanel.innerHTML = `
       <div class="drawer-empty">
-        No places or tracks are currently in view.
+        ${escapeHtml(emptyMessage)}
       </div>
     `;
 		return;
@@ -918,7 +976,7 @@ function renderViewportObjectList(): void {
 
 	detailPanel.innerHTML = `
     <div class="drawer-card">
-      <h2>In View</h2>
+      <h2>${escapeHtml(heading)}</h2>
       <div class="viewport-object-list">
 		${items
 					.map(
@@ -953,16 +1011,22 @@ function renderViewportObjectList(): void {
 			const objectId = button.dataset.objectId ?? "";
 			const objectType = button.dataset.objectType;
 			if (objectType === "track") {
-				const track = lastData.tracks.find((item) => item.id === objectId);
+				const track = data.tracks.find((item) => item.id === objectId);
 				if (track) {
 					renderTrackDetail(track);
+					if (focusOnSelect) {
+						focusTrackOnMap(track);
+					}
 				}
 				return;
 			}
 			if (objectType === "place") {
-				const place = lastData.places.find((item) => item.id === objectId);
+				const place = data.places.find((item) => item.id === objectId);
 				if (place) {
 					renderPlaceDetail(place);
+					if (focusOnSelect) {
+						focusPlaceOnMap(place);
+					}
 				}
 			}
 		});
@@ -978,18 +1042,14 @@ function syncDrawerSelection(): void {
 		return;
 	}
 	if (selectedMapObject.objectType === "track") {
-		const track = lastData.tracks.find(
-			(item) => item.id === selectedMapObject.id,
-		);
+		const track = findTrackById(selectedMapObject.id);
 		if (track) {
 			renderTrackDetail(track);
 			return;
 		}
 	}
 	if (selectedMapObject.objectType === "place") {
-		const place = lastData.places.find(
-			(item) => item.id === selectedMapObject.id,
-		);
+		const place = findPlaceById(selectedMapObject.id);
 		if (place) {
 			renderPlaceDetail(place);
 			return;
@@ -1959,6 +2019,37 @@ function updateModeUi(): void {
 	collapsedAddPlaceButton.classList.toggle("active", addPlaceMode);
 }
 
+function findTrackById(trackId: string): TrackRecord | undefined {
+	return (
+		lastData.tracks.find((track) => track.id === trackId) ??
+		globalSearchResults?.tracks.find((track) => track.id === trackId)
+	);
+}
+
+function findPlaceById(placeId: string): PlaceRecord | undefined {
+	return (
+		lastData.places.find((place) => place.id === placeId) ??
+		globalSearchResults?.places.find((place) => place.id === placeId)
+	);
+}
+
+function focusTrackOnMap(track: TrackRecord): void {
+	workspaceMap.fitBounds(
+		[
+			[track.min_lon, track.min_lat],
+			[track.max_lon, track.max_lat],
+		],
+		{ padding: 80, maxZoom: 13 },
+	);
+}
+
+function focusPlaceOnMap(place: PlaceRecord): void {
+	workspaceMap.easeTo({
+		center: [place.longitude, place.latitude],
+		zoom: Math.max(workspaceMap.getZoom(), 12),
+	});
+}
+
 function buildTrackFeatureCollection(
 	tracks: TrackRecord[],
 ): GeoJSON.FeatureCollection {
@@ -1983,7 +2074,7 @@ function buildSelectedTrackFeatureCollection(): GeoJSON.FeatureCollection {
 	if (hiddenTrackIds.has(selectedMapObject.id)) {
 		return emptyFeatureCollection();
 	}
-	const track = lastData.tracks.find((item) => item.id === selectedMapObject.id);
+	const track = findTrackById(selectedMapObject.id);
 	if (!track) {
 		return emptyFeatureCollection();
 	}
@@ -2013,7 +2104,7 @@ function buildSelectedPlaceFeatureCollection(): GeoJSON.FeatureCollection {
 	if (!selectedMapObject || selectedMapObject.objectType !== "place") {
 		return emptyFeatureCollection();
 	}
-	const place = lastData.places.find((item) => item.id === selectedMapObject.id);
+	const place = findPlaceById(selectedMapObject.id);
 	if (!place) {
 		return emptyFeatureCollection();
 	}

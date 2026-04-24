@@ -157,7 +157,17 @@
           </a>
         </main>
 
-        <aside class="panel">
+        <aside class="panel detail-sidebar">
+          <form id="right-panel-search-form" class="right-panel-search" role="search">
+            <label for="right-panel-search" class="visually-hidden">Search map objects</label>
+            <input
+              id="right-panel-search"
+              type="search"
+              placeholder="Search"
+              autocomplete="off"
+              enterkeyhint="search"
+            />
+          </form>
           <div id="detail-panel" class="panel-scroll">
             <div class="drawer-empty">
               Select a track or place on the map, or switch to place mode and click on the map to

@@ -40,6 +40,8 @@ That frontend build also vendors the basemap style, sprite, and font assets into
 ## Backend Conventions
 
 - Keep route behavior in `src/api.rs`.
+- Keep API documentation current with `utoipa` annotations when changing HTTP routes or DTOs.
+- Keep Swagger UI served from `utoipa-swagger-ui` with the `vendored` feature.
 - Keep startup/bootstrap concerns in `src/app.rs`.
 - Keep entity definitions in `src/entities.rs`.
 - Handle errors cleanly in production code.
@@ -53,6 +55,7 @@ That frontend build also vendors the basemap style, sprite, and font assets into
   - left-side controls
   - central map
   - right-side details/editor drawer
+- Keep right-side search behavior split between client-side in-view filtering while typing and backend global search on submit.
 - Avoid subtitles in the UI unless they are actually necessary.
 
 ## Documentation Rules
@@ -80,6 +83,8 @@ Then verify:
 
 - `/` serves the frontend
 - `/api/basemap` returns sensible config for the current environment
+- `/api-docs/openapi.json` serves the OpenAPI schema
+- `/swagger-ui/` serves the vendored Swagger UI
 
 ## Current Product Constraints
 

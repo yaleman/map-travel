@@ -18,6 +18,7 @@ use sea_orm::{
 };
 use serde::{Deserialize, Serialize};
 use tokio::sync::RwLock;
+use utoipa::ToSchema;
 use uuid::Uuid;
 
 use crate::{
@@ -52,13 +53,13 @@ pub struct MapsService {
     cancel_flags: Arc<RwLock<HashMap<String, Arc<AtomicBool>>>>,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, ToSchema)]
 pub struct BuildCatalogResponse {
     pub selected_build_key: Option<String>,
     pub builds: Vec<BuildRecord>,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, ToSchema)]
 pub struct BuildRecord {
     pub key: String,
     pub version: Option<String>,
@@ -68,13 +69,13 @@ pub struct BuildRecord {
     pub b3_sum: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, ToSchema)]
 pub struct LocalMapsResponse {
     pub selected_build_key: Option<String>,
     pub chunks: Vec<ChunkRecord>,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, ToSchema)]
 pub struct ChunkRecord {
     pub id: String,
     pub label: String,
@@ -92,7 +93,7 @@ pub struct ChunkRecord {
     pub archives: Vec<ArchiveRecord>,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, ToSchema)]
 pub struct ArchiveRecord {
     pub id: String,
     pub build_key: String,
@@ -107,12 +108,12 @@ pub struct ArchiveRecord {
     pub file_size_bytes: i64,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, ToSchema)]
 pub struct JobListResponse {
     pub jobs: Vec<JobRecord>,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, ToSchema)]
 pub struct JobRecord {
     pub id: String,
     pub kind: String,
@@ -131,13 +132,13 @@ pub struct JobRecord {
     pub finished_at: Option<DateTime<Utc>>,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, ToSchema)]
 pub struct EnqueuedJobResponse {
     pub job_id: String,
     pub chunk_id: String,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, ToSchema)]
 pub struct AreaExtractSpec {
     pub label: String,
     pub min_lon: f64,
@@ -147,7 +148,7 @@ pub struct AreaExtractSpec {
     pub max_zoom: i32,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, ToSchema)]
 pub struct RebuildChunksResponse {
     pub job_ids: Vec<String>,
 }
@@ -1436,7 +1437,7 @@ impl MapsService {
     }
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, ToSchema)]
 pub struct ActiveLayerUpdate {
     pub chunk_id: String,
     pub enabled: bool,

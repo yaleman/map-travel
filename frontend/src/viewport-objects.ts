@@ -6,6 +6,8 @@ export interface ViewportCenter {
 export interface ViewportTrackLike {
 	id: string;
 	title: string | null;
+	original_filename?: string | null;
+	notes?: string | null;
 	min_lat: number;
 	min_lon: number;
 	max_lat: number;
@@ -15,6 +17,8 @@ export interface ViewportTrackLike {
 export interface ViewportPlaceLike {
 	id: string;
 	name: string;
+	category?: string | null;
+	notes?: string | null;
 	latitude: number;
 	longitude: number;
 }
@@ -24,6 +28,41 @@ export interface ViewportObjectSummary {
 	objectType: "track" | "place";
 	title: string;
 	distanceMeters: number;
+}
+
+export interface FilteredViewportObjects<
+	TTrack extends ViewportTrackLike,
+	TPlace extends ViewportPlaceLike,
+> {
+	tracks: TTrack[];
+	places: TPlace[];
+}
+
+export function filterViewportObjects<
+	TTrack extends ViewportTrackLike,
+	TPlace extends ViewportPlaceLike,
+>(
+	query: string,
+	tracks: TTrack[],
+	places: TPlace[],
+): FilteredViewportObjects<TTrack, TPlace> {
+	const needle = query.trim().toLowerCase();
+	if (!needle) {
+		return { tracks, places };
+	}
+
+	return {
+		tracks: tracks.filter((track) =>
+			matchesAny(needle, [
+				track.title,
+				track.original_filename,
+				track.notes,
+			]),
+		),
+		places: places.filter((place) =>
+			matchesAny(needle, [place.name, place.category, place.notes]),
+		),
+	};
 }
 
 export function sortViewportObjectsByDistance(
@@ -53,6 +92,10 @@ export function sortViewportObjectsByDistance(
 	];
 
 	return items.sort((left, right) => left.distanceMeters - right.distanceMeters);
+}
+
+function matchesAny(needle: string, values: Array<string | null | undefined>): boolean {
+	return values.some((value) => value?.toLowerCase().includes(needle) ?? false);
 }
 
 function haversineDistanceMeters(
