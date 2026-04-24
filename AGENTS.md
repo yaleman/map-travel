@@ -1,5 +1,7 @@
 # Agents
 
+You're not done with a task until you run `mise check` and there's no issues.
+
 ## Repository Rules
 
 - Keep the implementation simple and direct.
