@@ -302,6 +302,7 @@ async fn import_tracks(
     mut multipart: Multipart,
 ) -> AppResult<(StatusCode, Json<ImportTracksResponse>)> {
     let mut file_bytes = None;
+    let mut original_filename = None;
 
     while let Some(field) = multipart
         .next_field()
@@ -309,6 +310,10 @@ async fn import_tracks(
         .map_err(|error| AppError::InvalidRequest(format!("invalid multipart upload: {error}")))?
     {
         if field.name() == Some("file") {
+            original_filename = field
+                .file_name()
+                .and_then(uploaded_filename_basename)
+                .map(str::to_owned);
             file_bytes = Some(
                 field
                     .bytes()
@@ -345,6 +350,7 @@ async fn import_tracks(
             id: Set(Uuid::new_v4().to_string()),
             owner_id: Set(context.owner_id().to_owned()),
             title: Set(parsed_track.name.clone()),
+            original_filename: Set(original_filename.clone()),
             notes: Set(parsed_track.description.clone()),
             geometry_json: Set(summary.geometry_json),
             min_lat: Set(summary.min_lat),
@@ -364,6 +370,7 @@ async fn import_tracks(
         imported.push(TrackResponse {
             id: created.id,
             title: created.title,
+            original_filename: created.original_filename,
             notes: created.notes,
             geometry_json: created.geometry_json,
             min_lat: created.min_lat,
@@ -405,6 +412,7 @@ struct MapObjectsResponse {
 struct TrackResponse {
     id: String,
     title: Option<String>,
+    original_filename: Option<String>,
     notes: Option<String>,
     geometry_json: String,
     min_lat: f64,
@@ -462,6 +470,7 @@ async fn list_map_objects(
             .map(|model| TrackResponse {
                 id: model.id,
                 title: model.title,
+                original_filename: model.original_filename,
                 notes: model.notes,
                 geometry_json: model.geometry_json,
                 min_lat: model.min_lat,
@@ -498,6 +507,7 @@ async fn update_track(
     Ok(Json(TrackResponse {
         id: updated.id,
         title: updated.title,
+        original_filename: updated.original_filename,
         notes: updated.notes,
         geometry_json: updated.geometry_json,
         min_lat: updated.min_lat,
@@ -800,4 +810,10 @@ fn trim_optional_string(value: String) -> Option<String> {
     } else {
         Some(trimmed.to_owned())
     }
+}
+
+fn uploaded_filename_basename(value: &str) -> Option<&str> {
+    value
+        .rsplit(['/', '\\'])
+        .find(|segment| !segment.trim().is_empty())
 }

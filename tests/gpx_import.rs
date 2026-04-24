@@ -108,6 +108,10 @@ async fn imports_a_gpx_track_and_makes_it_queryable_on_the_map() {
         1
     );
     assert_eq!(import_json["tracks"][0]["title"], "Mueller Hut Track");
+    assert_eq!(
+        import_json["tracks"][0]["original_filename"],
+        "mueller-hut.gpx"
+    );
 
     let query_response = router
         .oneshot(
@@ -125,6 +129,7 @@ async fn imports_a_gpx_track_and_makes_it_queryable_on_the_map() {
         .expect("tracks should be an array");
     assert_eq!(tracks.len(), 1);
     assert_eq!(tracks[0]["title"], "Mueller Hut Track");
+    assert_eq!(tracks[0]["original_filename"], "mueller-hut.gpx");
 }
 
 #[tokio::test]
@@ -189,4 +194,8 @@ async fn imports_large_valid_gpx_uploads() {
         1
     );
     assert_eq!(import_json["tracks"][0]["title"], "Big Track");
+    assert_eq!(
+        import_json["tracks"][0]["original_filename"],
+        "big-track.gpx"
+    );
 }

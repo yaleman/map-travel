@@ -47,6 +47,7 @@ interface PlaceRecord {
 interface TrackRecord {
 	id: string;
 	title: string | null;
+	original_filename: string | null;
 	notes: string | null;
 	geometry_json: string;
 	min_lat: number;
@@ -843,6 +844,7 @@ function renderTrackDetail(track: TrackRecord): void {
       </div>
       ${track.notes ? `<div>${escapeHtml(track.notes)}</div>` : ""}
       <div class="detail-list">
+        ${track.original_filename ? `<div><strong>Original file</strong><br />${escapeHtml(track.original_filename)}</div>` : ""}
         <div><strong>Bounds</strong><br />${track.min_lat.toFixed(4)}, ${track.min_lon.toFixed(4)} → ${track.max_lat.toFixed(4)}, ${track.max_lon.toFixed(4)}</div>
       </div>
     </div>

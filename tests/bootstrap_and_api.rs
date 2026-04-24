@@ -324,6 +324,10 @@ async fn updates_imported_track_fields() {
         .as_str()
         .expect("track id")
         .to_owned();
+    assert_eq!(
+        imported["tracks"][0]["original_filename"],
+        "mueller-hut.gpx"
+    );
 
     let update_response = router
         .clone()
@@ -347,6 +351,7 @@ async fn updates_imported_track_fields() {
     let updated = json_response(update_response).await;
     assert_eq!(updated["title"], "Renamed Track");
     assert_eq!(updated["notes"], "Updated notes");
+    assert_eq!(updated["original_filename"], "mueller-hut.gpx");
 }
 
 #[tokio::test]

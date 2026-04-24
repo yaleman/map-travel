@@ -79,6 +79,7 @@ pub mod track {
         pub id: String,
         pub owner_id: String,
         pub title: Option<String>,
+        pub original_filename: Option<String>,
         pub notes: Option<String>,
         pub geometry_json: String,
         pub min_lat: f64,

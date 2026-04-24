@@ -48,4 +48,12 @@ test("imports a large GPX file through the browser", async ({ page }) => {
 	await expect(page.locator("#detail-panel")).toContainText(
 		"GPX import complete. The track is now on the map.",
 	);
+	await page.getByRole("button", { name: "Refresh" }).click();
+	await page
+		.locator("#detail-panel")
+		.getByRole("button", { name: /Large Browser Track/ })
+		.click();
+	await expect(page.locator("#detail-panel")).toContainText(
+		"large-browser-track.gpx",
+	);
 });
