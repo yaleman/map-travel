@@ -286,7 +286,9 @@ async fn updates_selected_place_fields() {
                     json!({
                         "name": "New Name",
                         "category": "camp",
-                        "notes": "After update"
+                        "notes": "After update",
+                        "visit_start": "2026-02-11T09:30:00Z",
+                        "visit_end": "2026-02-11T10:45:00Z"
                     })
                     .to_string(),
                 ))
@@ -299,6 +301,8 @@ async fn updates_selected_place_fields() {
     assert_eq!(updated["name"], "New Name");
     assert_eq!(updated["category"], "camp");
     assert_eq!(updated["notes"], "After update");
+    assert_eq!(updated["visit_start"], "2026-02-11T09:30:00Z");
+    assert_eq!(updated["visit_end"], "2026-02-11T10:45:00Z");
 }
 
 #[tokio::test]

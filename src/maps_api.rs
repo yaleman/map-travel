@@ -572,7 +572,7 @@ fn request_base_url(headers: &HeaderMap) -> String {
         .get(axum::http::header::HOST)
         .and_then(|value| value.to_str().ok())
         .filter(|value| !value.is_empty())
-        .unwrap_or("127.0.0.1:9000");
+        .unwrap_or("127.0.0.1:3000");
     format!("{proto}://{host}")
 }
 

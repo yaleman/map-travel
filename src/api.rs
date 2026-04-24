@@ -241,6 +241,8 @@ struct UpdatePlaceRequest {
     name: String,
     category: Option<String>,
     notes: Option<String>,
+    visit_start: Option<DateTime<Utc>>,
+    visit_end: Option<DateTime<Utc>>,
 }
 
 #[utoipa::path(
@@ -371,6 +373,8 @@ async fn update_place(
         .category
         .and_then(|value| trim_optional_string(&value)));
     model.notes = Set(request.notes.and_then(|value| trim_optional_string(&value)));
+    model.visit_start = Set(request.visit_start);
+    model.visit_end = Set(request.visit_end);
     model.updated_at = Set(now);
     let updated = model.update(context.db()).await?;
 

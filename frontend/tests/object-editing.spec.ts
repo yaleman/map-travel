@@ -24,8 +24,8 @@ test("renames places and tracks from the drawer", async ({ page, request }) => {
 			notes: "Original note",
 			latitude: -27.4698,
 			longitude: 153.0251,
-			visit_start: null,
-			visit_end: null,
+			visit_start: "2026-02-10T00:00:00Z",
+			visit_end: "2026-02-10T01:00:00Z",
 			collection_ids: [],
 			tag_names: [],
 		},
@@ -43,6 +43,14 @@ test("renames places and tracks from the drawer", async ({ page, request }) => {
 	await page.getByRole("button", { name: "Edit" }).click();
 	await page.locator("#place-edit-form input[name='name']").fill("Renamed Place");
 	await page.locator("#place-edit-form textarea[name='notes']").fill("Updated place note");
+	await page
+		.locator("#place-edit-form input[name='visit_start']")
+		.fill("2026-02-11T09:30");
+	await page
+		.locator("#place-edit-form input[name='visit_end']")
+		.fill("2026-02-11T10:45");
+	const expectedVisitStart = new Date("2026-02-11T09:30").toISOString();
+	const expectedVisitEnd = new Date("2026-02-11T10:45").toISOString();
 
 	const [placePatch] = await Promise.all([
 		page.waitForResponse(
@@ -53,6 +61,11 @@ test("renames places and tracks from the drawer", async ({ page, request }) => {
 		page.locator("#place-edit-form").getByRole("button", { name: "Save" }).click(),
 	]);
 	expect(placePatch.status()).toBe(200);
+	const placePatchPayload = await placePatch.json();
+	expect(new Date(placePatchPayload.visit_start).toISOString()).toBe(
+		expectedVisitStart,
+	);
+	expect(new Date(placePatchPayload.visit_end).toISOString()).toBe(expectedVisitEnd);
 	await expect(detailPanel).toContainText("Renamed Place");
 	await expect(detailPanel).toContainText("Updated place note");
 

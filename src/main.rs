@@ -41,7 +41,7 @@ struct Cli {
     database_url: String,
 
     /// Listen address
-    #[arg(long, env = "MAP_TRAVEL_LISTEN_ADDR", default_value = "127.0.0.1:9000")]
+    #[arg(long, env = "MAP_TRAVEL_LISTEN_ADDR", default_value = "127.0.0.1:3000")]
     listen_addr: SocketAddr,
 
     /// Path to PMTiles file

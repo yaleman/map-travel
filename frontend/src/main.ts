@@ -1087,11 +1087,11 @@ function openPlaceDrawer(place: PendingPlaceState): void {
         </label>
         <div class="field-grid two-up">
           <label>
-            Visit start
+            Stay start
             <input name="visit_start" type="datetime-local" />
           </label>
           <label>
-            Visit end
+            Stay end
             <input name="visit_end" type="datetime-local" />
           </label>
         </div>
@@ -1256,6 +1256,16 @@ function openPlaceEditor(place: PlaceRecord, confirmDelete = false): void {
           Notes
           <textarea name="notes">${escapeHtml(place.notes ?? "")}</textarea>
         </label>
+        <div class="field-grid two-up">
+          <label>
+            Stay start
+            <input name="visit_start" type="datetime-local" value="${formatDateTimeLocalValue(place.visit_start)}" />
+          </label>
+          <label>
+            Stay end
+            <input name="visit_end" type="datetime-local" value="${formatDateTimeLocalValue(place.visit_end)}" />
+          </label>
+        </div>
       </div>
       <div class="inline-actions">
         <button type="submit">Save</button>
@@ -1287,6 +1297,8 @@ function openPlaceEditor(place: PlaceRecord, confirmDelete = false): void {
 			name: String(formData.get("name") ?? "").trim(),
 			category: optionalString(formData.get("category")),
 			notes: optionalString(formData.get("notes")),
+			visit_start: toIsoOrNull(formData.get("visit_start")),
+			visit_end: toIsoOrNull(formData.get("visit_end")),
 		});
 		await refreshMapData();
 		renderPlaceDetail(updated);
@@ -2244,6 +2256,15 @@ function optionalString(value: FormDataEntryValue | null): string | null {
 function toIsoOrNull(value: FormDataEntryValue | null): string | null {
 	const stringValue = typeof value === "string" ? value : "";
 	return stringValue ? new Date(stringValue).toISOString() : null;
+}
+
+function formatDateTimeLocalValue(value: string | null): string {
+	if (!value) {
+		return "";
+	}
+	const date = new Date(value);
+	const localOffsetMs = date.getTimezoneOffset() * 60 * 1000;
+	return new Date(date.getTime() - localOffsetMs).toISOString().slice(0, 16);
 }
 
 function escapeHtml(value: string): string {
