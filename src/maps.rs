@@ -137,6 +137,16 @@ pub struct EnqueuedJobResponse {
     pub chunk_id: String,
 }
 
+#[derive(Debug, Clone, Deserialize)]
+pub struct AreaExtractSpec {
+    pub label: String,
+    pub min_lon: f64,
+    pub min_lat: f64,
+    pub max_lon: f64,
+    pub max_lat: f64,
+    pub max_zoom: i32,
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct RebuildChunksResponse {
     pub job_ids: Vec<String>,
@@ -389,14 +399,17 @@ impl MapsService {
 
     pub async fn queue_area_extract(
         &self,
-        label: String,
         build_key: &str,
-        min_lon: f64,
-        min_lat: f64,
-        max_lon: f64,
-        max_lat: f64,
-        max_zoom: i32,
+        request: AreaExtractSpec,
     ) -> AppResult<EnqueuedJobResponse> {
+        let AreaExtractSpec {
+            label,
+            min_lon,
+            min_lat,
+            max_lon,
+            max_lat,
+            max_zoom,
+        } = request;
         validate_bbox(min_lon, min_lat, max_lon, max_lat)?;
         self.ensure_selected_build_key(build_key).await?;
         let chunk = if let Some(existing) = self
@@ -535,10 +548,10 @@ impl MapsService {
 
     pub async fn managed_basemap_summary(&self) -> AppResult<Option<ManagedBasemapSummary>> {
         let layers = self.active_layers_for_selected_build().await?;
-        if layers.is_empty() {
+        let Some(first_layer) = layers.first() else {
             return Ok(None);
-        }
-        let first_reader = self.reader_for_archive(&layers[0].archive).await?;
+        };
+        let first_reader = self.reader_for_archive(&first_layer.archive).await?;
         let first_header = first_reader.get_header();
         let bounds = union_bounds(layers.iter().map(|layer| {
             (
@@ -595,10 +608,10 @@ impl MapsService {
 
     pub async fn managed_style(&self) -> AppResult<Option<serde_json::Value>> {
         let layers = self.active_layers_for_selected_build().await?;
-        if layers.is_empty() {
+        let Some(first_layer) = layers.first() else {
             return Ok(None);
-        }
-        let first_reader = self.reader_for_archive(&layers[0].archive).await?;
+        };
+        let first_reader = self.reader_for_archive(&first_layer.archive).await?;
         let header = first_reader.get_header();
         let summary = self
             .managed_basemap_summary()
@@ -662,10 +675,10 @@ impl MapsService {
 
     pub async fn managed_tilejson(&self) -> AppResult<Option<serde_json::Value>> {
         let layers = self.active_layers_for_selected_build().await?;
-        if layers.is_empty() {
+        let Some(first_layer) = layers.first() else {
             return Ok(None);
-        }
-        let reader = self.reader_for_archive(&layers[0].archive).await?;
+        };
+        let reader = self.reader_for_archive(&first_layer.archive).await?;
         let summary = self
             .managed_basemap_summary()
             .await?
@@ -1399,10 +1412,10 @@ impl MapsService {
 
     async fn has_active_vector_basemap(&self) -> AppResult<bool> {
         let layers = self.active_layers_for_selected_build().await?;
-        if layers.is_empty() {
+        let Some(first_layer) = layers.first() else {
             return Ok(false);
-        }
-        let first_reader = self.reader_for_archive(&layers[0].archive).await?;
+        };
+        let first_reader = self.reader_for_archive(&first_layer.archive).await?;
         let header = first_reader.get_header();
         Ok(matches!(header.tile_type, TileType::Mvt | TileType::Mlt))
     }
@@ -1431,11 +1444,19 @@ pub struct ActiveLayerUpdate {
 }
 
 fn rewrite_style_sources(mut style: serde_json::Value) -> serde_json::Value {
-    if style.get("sprite").is_some() {
-        style["sprite"] = serde_json::Value::String(LOCAL_MANAGED_SPRITE_PATH.to_owned());
-    }
-    if style.get("glyphs").is_some() {
-        style["glyphs"] = serde_json::Value::String(LOCAL_MANAGED_GLYPHS_PATH.to_owned());
+    if let Some(style_object) = style.as_object_mut() {
+        if style_object.contains_key("sprite") {
+            style_object.insert(
+                "sprite".to_owned(),
+                serde_json::Value::String(LOCAL_MANAGED_SPRITE_PATH.to_owned()),
+            );
+        }
+        if style_object.contains_key("glyphs") {
+            style_object.insert(
+                "glyphs".to_owned(),
+                serde_json::Value::String(LOCAL_MANAGED_GLYPHS_PATH.to_owned()),
+            );
+        }
     }
     if let Some(sources) = style
         .get_mut("sources")
@@ -1589,7 +1610,7 @@ where
 }
 
 fn should_emit_progress(done: usize, total: usize) -> bool {
-    done == total || done <= 10 || done % 25 == 0
+    done == total || done <= 10 || done.is_multiple_of(25)
 }
 
 fn percent_for_range(done: usize, total: usize, start: i32, end: i32) -> i32 {
@@ -1655,4 +1676,41 @@ impl From<map_job::Model> for JobRecord {
 
 pub fn derive_managed_maps_dir(_database_url: &str) -> Option<PathBuf> {
     Some(PathBuf::from("maps"))
+}
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+
+    use super::{LOCAL_MANAGED_GLYPHS_PATH, LOCAL_MANAGED_SPRITE_PATH, rewrite_style_sources};
+
+    #[test]
+    fn rewrite_style_sources_repoints_local_assets() {
+        let style = json!({
+            "version": 8,
+            "sprite": "https://example.invalid/sprite",
+            "glyphs": "https://example.invalid/fonts/{fontstack}/{range}.pbf",
+            "sources": {
+                "basemap": {
+                    "type": "vector",
+                    "url": "pmtiles://example"
+                }
+            }
+        });
+
+        let rewritten = rewrite_style_sources(style);
+
+        assert_eq!(
+            rewritten.get("sprite").and_then(serde_json::Value::as_str),
+            Some(LOCAL_MANAGED_SPRITE_PATH)
+        );
+        assert_eq!(
+            rewritten.get("glyphs").and_then(serde_json::Value::as_str),
+            Some(LOCAL_MANAGED_GLYPHS_PATH)
+        );
+        assert_eq!(
+            rewritten["sources"]["basemap"]["url"].as_str(),
+            Some("/api/basemap/tilejson.json")
+        );
+    }
 }

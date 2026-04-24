@@ -254,8 +254,10 @@ async fn update_place(
     let now = Utc::now();
     let mut model: place::ActiveModel = existing.into();
     model.name = Set(trimmed_name.to_owned());
-    model.category = Set(request.category.and_then(trim_optional_string));
-    model.notes = Set(request.notes.and_then(trim_optional_string));
+    model.category = Set(request
+        .category
+        .and_then(|value| trim_optional_string(&value)));
+    model.notes = Set(request.notes.and_then(|value| trim_optional_string(&value)));
     model.updated_at = Set(now);
     let updated = model.update(context.db()).await?;
 
@@ -499,8 +501,8 @@ async fn update_track(
 
     let now = Utc::now();
     let mut model: track::ActiveModel = existing.into();
-    model.title = Set(request.title.and_then(trim_optional_string));
-    model.notes = Set(request.notes.and_then(trim_optional_string));
+    model.title = Set(request.title.and_then(|value| trim_optional_string(&value)));
+    model.notes = Set(request.notes.and_then(|value| trim_optional_string(&value)));
     model.updated_at = Set(now);
     let updated = model.update(context.db()).await?;
 
@@ -803,7 +805,7 @@ fn haversine_distance_m(from_lat: f64, from_lon: f64, to_lat: f64, to_lon: f64) 
     earth_radius_m * c
 }
 
-fn trim_optional_string(value: String) -> Option<String> {
+fn trim_optional_string(value: &str) -> Option<String> {
     let trimmed = value.trim();
     if trimmed.is_empty() {
         None

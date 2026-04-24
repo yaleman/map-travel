@@ -11,7 +11,7 @@ use serde::Deserialize;
 use crate::{
     app::AppContext,
     error::{AppError, AppResult},
-    maps::{ActiveLayerUpdate, ManagedBasemapSummary},
+    maps::{ActiveLayerUpdate, AreaExtractSpec, ManagedBasemapSummary},
 };
 
 pub fn build_router() -> Router<Arc<AppContext>> {
@@ -55,12 +55,8 @@ struct WorldTo6Request {
 #[derive(Debug, Deserialize)]
 struct AreaExtractRequest {
     build_key: String,
-    label: String,
-    min_lon: f64,
-    min_lat: f64,
-    max_lon: f64,
-    max_lat: f64,
-    max_zoom: i32,
+    #[serde(flatten)]
+    extract: AreaExtractSpec,
 }
 
 #[derive(Debug, Deserialize)]
@@ -134,15 +130,7 @@ async fn post_area_extract(
 ) -> AppResult<(StatusCode, Json<serde_json::Value>)> {
     let payload = context
         .maps()
-        .queue_area_extract(
-            request.label,
-            &request.build_key,
-            request.min_lon,
-            request.min_lat,
-            request.max_lon,
-            request.max_lat,
-            request.max_zoom,
-        )
+        .queue_area_extract(&request.build_key, request.extract)
         .await?;
     let json = serde_json::to_value(payload).map_err(|error| {
         AppError::Internal(format!(
@@ -445,22 +433,34 @@ fn absolute_url(base_url: &str, path: &str) -> String {
 }
 
 fn absolutize_style_urls(mut style: serde_json::Value, base_url: &str) -> serde_json::Value {
-    if let Some(sprite) = style.get("sprite").and_then(serde_json::Value::as_str) {
-        let absolute = absolute_url(base_url, sprite);
-        style["sprite"] = serde_json::Value::String(absolute);
-    }
-    if let Some(glyphs) = style.get("glyphs").and_then(serde_json::Value::as_str) {
-        let absolute = absolute_url(base_url, glyphs);
-        style["glyphs"] = serde_json::Value::String(absolute);
+    if let Some(style_object) = style.as_object_mut() {
+        if let Some(sprite) = style_object
+            .get("sprite")
+            .and_then(serde_json::Value::as_str)
+            .map(|value| absolute_url(base_url, value))
+        {
+            style_object.insert("sprite".to_owned(), serde_json::Value::String(sprite));
+        }
+        if let Some(glyphs) = style_object
+            .get("glyphs")
+            .and_then(serde_json::Value::as_str)
+            .map(|value| absolute_url(base_url, value))
+        {
+            style_object.insert("glyphs".to_owned(), serde_json::Value::String(glyphs));
+        }
     }
     if let Some(sources) = style
         .get_mut("sources")
         .and_then(serde_json::Value::as_object_mut)
     {
         for source in sources.values_mut() {
-            if let Some(url) = source.get("url").and_then(serde_json::Value::as_str) {
-                let absolute = absolute_url(base_url, url);
-                source["url"] = serde_json::Value::String(absolute);
+            if let Some(source_object) = source.as_object_mut()
+                && let Some(url) = source_object
+                    .get("url")
+                    .and_then(serde_json::Value::as_str)
+                    .map(|value| absolute_url(base_url, value))
+            {
+                source_object.insert("url".to_owned(), serde_json::Value::String(url));
             }
             if let Some(tiles) = source
                 .get_mut("tiles")
@@ -529,5 +529,45 @@ fn tile_type_name(tile_type: pmtiles::TileType) -> &'static str {
         pmtiles::TileType::Webp => "webp",
         pmtiles::TileType::Avif => "avif",
         pmtiles::TileType::Mlt => "mlt",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+
+    use super::absolutize_style_urls;
+
+    #[test]
+    fn absolutize_style_urls_rewrites_relative_assets() {
+        let style = json!({
+            "sprite": "/api/basemap/sprite",
+            "glyphs": "/api/basemap/fonts/{fontstack}/{range}.pbf",
+            "sources": {
+                "basemap": {
+                    "url": "/api/basemap/tilejson.json",
+                    "tiles": ["/api/basemap/tiles/{z}/{x}/{y}"]
+                }
+            }
+        });
+
+        let rewritten = absolutize_style_urls(style, "http://maps.test");
+
+        assert_eq!(
+            rewritten.get("sprite").and_then(serde_json::Value::as_str),
+            Some("http://maps.test/api/basemap/sprite")
+        );
+        assert_eq!(
+            rewritten.get("glyphs").and_then(serde_json::Value::as_str),
+            Some("http://maps.test/api/basemap/fonts/{fontstack}/{range}.pbf")
+        );
+        assert_eq!(
+            rewritten["sources"]["basemap"]["url"].as_str(),
+            Some("http://maps.test/api/basemap/tilejson.json")
+        );
+        assert_eq!(
+            rewritten["sources"]["basemap"]["tiles"][0].as_str(),
+            Some("http://maps.test/api/basemap/tiles/{z}/{x}/{y}")
+        );
     }
 }
