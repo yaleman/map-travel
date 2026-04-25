@@ -213,6 +213,7 @@ async fn creates_places_and_filters_them_by_bounds_collection_and_type() {
     );
 
     let filtered_query = router
+        .clone()
         .oneshot(
             Request::builder()
                 .uri(format!(
@@ -236,6 +237,23 @@ async fn creates_places_and_filters_them_by_bounds_collection_and_type() {
             .expect("tracks should be an array")
             .is_empty()
     );
+
+    let wrapped_query = router
+        .oneshot(
+            Request::builder()
+                .uri("/api/map-objects?min_lat=-44.0&min_lon=169.0&max_lat=-43.0&max_lon=-170.0&object_type=place")
+                .body(Body::empty())
+                .expect("wrapped query should build"),
+        )
+        .await
+        .expect("wrapped query should succeed");
+    assert_eq!(wrapped_query.status(), StatusCode::OK);
+    let wrapped_json = json_response(wrapped_query).await;
+    let wrapped_places = wrapped_json["places"]
+        .as_array()
+        .expect("places should be an array");
+    assert_eq!(wrapped_places.len(), 1);
+    assert_eq!(wrapped_places[0]["name"], "Hooker Valley Trailhead");
 }
 
 #[tokio::test]
@@ -274,6 +292,22 @@ async fn updates_selected_place_fields() {
         .expect("place request should succeed");
     let created = json_response(create_response).await;
     let place_id = created["id"].as_str().expect("place id").to_owned();
+
+    let get_response = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri(format!("/api/places/{place_id}"))
+                .body(Body::empty())
+                .expect("get request should build"),
+        )
+        .await
+        .expect("get request should succeed");
+    assert_eq!(get_response.status(), StatusCode::OK);
+    let fetched = json_response(get_response).await;
+    assert_eq!(fetched["name"], "Old Name");
+    assert_eq!(fetched["category"], "lookout");
 
     let update_response = router
         .clone()
@@ -332,6 +366,21 @@ async fn updates_imported_track_fields() {
         imported["tracks"][0]["original_filename"],
         "mueller-hut.gpx"
     );
+
+    let get_response = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri(format!("/api/tracks/{track_id}"))
+                .body(Body::empty())
+                .expect("get request should build"),
+        )
+        .await
+        .expect("get request should succeed");
+    assert_eq!(get_response.status(), StatusCode::OK);
+    let fetched = json_response(get_response).await;
+    assert_eq!(fetched["original_filename"], "mueller-hut.gpx");
 
     let update_response = router
         .clone()

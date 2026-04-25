@@ -2,6 +2,12 @@ export interface ViewportFragmentState {
 	latitude: number;
 	longitude: number;
 	zoom: number;
+	selectedObject?: ViewportFragmentSelectedObject | null;
+}
+
+export interface ViewportFragmentSelectedObject {
+	id: string;
+	objectType: "track" | "place";
 }
 
 interface HistoryLike {
@@ -17,7 +23,11 @@ interface LocationLike {
 export function formatViewportFragment(
 	state: ViewportFragmentState,
 ): string {
-	return `map=${state.latitude.toFixed(5)},${state.longitude.toFixed(5)},${state.zoom.toFixed(2)}`;
+	const mapFragment = `map=${state.latitude.toFixed(5)},${state.longitude.toFixed(5)},${state.zoom.toFixed(2)}`;
+	if (!state.selectedObject) {
+		return mapFragment;
+	}
+	return `${mapFragment}&object=${state.selectedObject.objectType}:${encodeURIComponent(state.selectedObject.id)}`;
 }
 
 export function parseViewportFragment(
@@ -28,8 +38,13 @@ export function parseViewportFragment(
 		return null;
 	}
 
-	const [latitude, longitude, zoom] = fragment
-		.slice(4)
+	const params = new URLSearchParams(fragment);
+	const mapValue = params.get("map");
+	if (!mapValue) {
+		return null;
+	}
+
+	const [latitude, longitude, zoom] = mapValue
 		.split(",")
 		.map((value) => Number(value));
 	if (
@@ -43,11 +58,18 @@ export function parseViewportFragment(
 		return null;
 	}
 
-	return {
+	const state: ViewportFragmentState = {
 		latitude,
 		longitude,
 		zoom,
 	};
+
+	const selectedObject = parseSelectedObject(params.get("object"));
+	if (selectedObject) {
+		state.selectedObject = selectedObject;
+	}
+
+	return state;
 }
 
 export function writeViewportFragment(
@@ -55,8 +77,40 @@ export function writeViewportFragment(
 	locationLike: LocationLike = window.location,
 	historyLike: HistoryLike = window.history,
 ): void {
-	const nextUrl = `${locationLike.pathname}${locationLike.search}#${formatViewportFragment(state)}`;
+	const currentSelectedObject =
+		state.selectedObject === undefined
+			? parseViewportFragment(locationLike.hash ?? "")?.selectedObject
+			: state.selectedObject;
+	const nextUrl = `${locationLike.pathname}${locationLike.search}#${formatViewportFragment({
+		...state,
+		selectedObject: currentSelectedObject,
+	})}`;
+	const currentUrl = `${locationLike.pathname}${locationLike.search}${locationLike.hash ?? ""}`;
+	if (nextUrl === currentUrl) {
+		return;
+	}
 	historyLike.replaceState({}, "", nextUrl);
+}
+
+function parseSelectedObject(
+	value: string | null,
+): ViewportFragmentSelectedObject | null {
+	if (!value) {
+		return null;
+	}
+	const separatorIndex = value.indexOf(":");
+	if (separatorIndex < 0) {
+		return null;
+	}
+	const objectType = value.slice(0, separatorIndex);
+	const id = value.slice(separatorIndex + 1);
+	if ((objectType !== "track" && objectType !== "place") || !id) {
+		return null;
+	}
+	return {
+		objectType,
+		id,
+	};
 }
 
 export function buildViewUrl(

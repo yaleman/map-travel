@@ -2,12 +2,12 @@ use std::sync::Arc;
 
 use axum::{
     Json, Router,
-    extract::{Path, State},
+    extract::{Path, Query, State},
     http::{HeaderMap, StatusCode},
     routing::{get, post},
 };
-use serde::Deserialize;
-use utoipa::ToSchema;
+use serde::{Deserialize, Serialize};
+use utoipa::{IntoParams, ToSchema};
 
 use crate::{
     app::AppContext,
@@ -15,8 +15,12 @@ use crate::{
     maps::{
         ActiveLayerUpdate, AreaExtractSpec, BuildCatalogResponse, EnqueuedJobResponse,
         JobListResponse, LocalMapsResponse, ManagedBasemapSummary, RebuildChunksResponse,
+        tile_bounds_for_coord, tile_range_for_bbox, validate_bbox,
     },
 };
+
+const MAX_MISSING_TILE_ZOOM: u8 = 12;
+const MAX_MISSING_TILE_SCAN: u32 = 4096;
 
 pub fn build_router() -> Router<Arc<AppContext>> {
     Router::new()
@@ -48,6 +52,7 @@ pub fn build_router() -> Router<Arc<AppContext>> {
             get(get_basemap_sprite_png_hidpi),
         )
         .route("/api/basemap/tilejson.json", get(get_basemap_tilejson))
+        .route("/api/basemap/missing-tiles", get(get_missing_basemap_tiles))
         .route("/api/basemap/tiles/{z}/{x}/{y}", get(get_basemap_tile))
 }
 
@@ -84,6 +89,24 @@ pub(crate) struct BasemapConfigResponse {
     max_zoom: Option<u8>,
     bounds: Option<[f64; 4]>,
     message: Option<String>,
+}
+
+#[derive(Debug, Deserialize, IntoParams)]
+pub(crate) struct MissingTilesQuery {
+    min_lon: f64,
+    min_lat: f64,
+    max_lon: f64,
+    max_lat: f64,
+    tile_zoom: u8,
+}
+
+#[derive(Debug, Serialize, ToSchema)]
+pub(crate) struct MissingTilesResponse {
+    missing: bool,
+    tile_zoom: u8,
+    missing_tile_count: u32,
+    bounds: Option<[f64; 4]>,
+    max_zoom: Option<u8>,
 }
 
 #[utoipa::path(
@@ -519,6 +542,7 @@ pub(crate) async fn get_basemap_sprite_png_hidpi(
     ),
     responses(
         (status = 200, description = "Map tile", content_type = "application/octet-stream"),
+        (status = 204, description = "Tile coordinate has no tile data"),
         (status = 400, description = "Invalid request", body = ErrorBody),
         (status = 500, description = "Internal error", body = ErrorBody)
     )
@@ -526,25 +550,85 @@ pub(crate) async fn get_basemap_sprite_png_hidpi(
 pub(crate) async fn get_basemap_tile(
     State(context): State<Arc<AppContext>>,
     Path((z, x, y)): Path<(u8, u32, u32)>,
-) -> AppResult<impl axum::response::IntoResponse> {
+) -> AppResult<axum::response::Response> {
     let coord = pmtiles::TileCoord::new(z, x, y)
         .map_err(|error| AppError::InvalidRequest(format!("invalid tile coordinate: {error}")))?;
 
-    if let Some(tile) = context.maps().managed_tile(coord).await? {
+    if let Some(tile) = load_basemap_tile(&context, coord).await? {
         return build_tile_response(tile.bytes, tile.tile_type, tile.tile_compression);
     }
 
-    let reader = context
-        .pmtiles_reader()
-        .ok_or_else(|| AppError::InvalidRequest("No PMTiles archive configured".to_owned()))?;
-    let header = reader.get_header();
-    let tile = reader
-        .get_tile(coord)
-        .await
-        .map_err(|error| AppError::Internal(format!("could not read PMTiles tile: {error}")))?
-        .ok_or_else(|| AppError::InvalidRequest("tile not found in PMTiles archive".to_owned()))?;
+    build_empty_tile_response()
+}
 
-    build_tile_response(tile, header.tile_type, header.tile_compression)
+#[utoipa::path(
+    get,
+    path = "/api/basemap/missing-tiles",
+    params(MissingTilesQuery),
+    responses(
+        (status = 200, description = "Missing basemap tile recommendation", body = MissingTilesResponse),
+        (status = 400, description = "Invalid request", body = ErrorBody),
+        (status = 500, description = "Internal error", body = ErrorBody)
+    )
+)]
+pub(crate) async fn get_missing_basemap_tiles(
+    State(context): State<Arc<AppContext>>,
+    Query(query): Query<MissingTilesQuery>,
+) -> AppResult<Json<MissingTilesResponse>> {
+    validate_bbox(query.min_lon, query.min_lat, query.max_lon, query.max_lat)?;
+    if query.tile_zoom > MAX_MISSING_TILE_ZOOM {
+        return Err(AppError::InvalidRequest(format!(
+            "tile_zoom must be at most {MAX_MISSING_TILE_ZOOM}"
+        )));
+    }
+
+    let (min_x, max_x, min_y, max_y) = tile_range_for_bbox(
+        query.min_lon,
+        query.min_lat,
+        query.max_lon,
+        query.max_lat,
+        query.tile_zoom,
+    );
+    let x_count = max_x
+        .checked_sub(min_x)
+        .and_then(|value| value.checked_add(1))
+        .ok_or_else(|| AppError::Internal("invalid x tile range".to_owned()))?;
+    let y_count = max_y
+        .checked_sub(min_y)
+        .and_then(|value| value.checked_add(1))
+        .ok_or_else(|| AppError::Internal("invalid y tile range".to_owned()))?;
+    let scan_count = x_count
+        .checked_mul(y_count)
+        .ok_or_else(|| AppError::InvalidRequest("tile scan is too large".to_owned()))?;
+    if scan_count > MAX_MISSING_TILE_SCAN {
+        return Err(AppError::InvalidRequest(format!(
+            "tile scan is too large; narrow the viewport or lower zoom below {scan_count} tiles"
+        )));
+    }
+
+    let mut missing_tile_count = 0_u32;
+    let mut missing_bounds: Option<[f64; 4]> = None;
+    for x in min_x..=max_x {
+        for y in min_y..=max_y {
+            let coord = pmtiles::TileCoord::new(query.tile_zoom, x, y).map_err(|error| {
+                AppError::Internal(format!("invalid generated tile coordinate: {error}"))
+            })?;
+            if load_basemap_tile(&context, coord).await?.is_none() {
+                missing_tile_count = missing_tile_count.checked_add(1).ok_or_else(|| {
+                    AppError::Internal("missing tile count overflowed".to_owned())
+                })?;
+                missing_bounds = Some(expand_bounds(missing_bounds, tile_bounds_for_coord(coord)));
+            }
+        }
+    }
+
+    Ok(Json(MissingTilesResponse {
+        missing: missing_tile_count > 0,
+        tile_zoom: query.tile_zoom,
+        missing_tile_count,
+        bounds: missing_bounds,
+        max_zoom: (missing_tile_count > 0).then_some(query.tile_zoom),
+    }))
 }
 
 fn config_from_managed_summary(
@@ -659,6 +743,73 @@ fn build_tile_response(
     response
         .body(axum::body::Body::from(tile))
         .map_err(|error| AppError::Internal(format!("could not build tile response: {error}")))
+}
+
+struct LoadedBasemapTile {
+    bytes: bytes::Bytes,
+    tile_type: pmtiles::TileType,
+    tile_compression: pmtiles::Compression,
+}
+
+async fn load_basemap_tile(
+    context: &AppContext,
+    coord: pmtiles::TileCoord,
+) -> AppResult<Option<LoadedBasemapTile>> {
+    if let Some(tile) = context.maps().managed_tile(coord).await? {
+        return Ok(Some(LoadedBasemapTile {
+            bytes: tile.bytes,
+            tile_type: tile.tile_type,
+            tile_compression: tile.tile_compression,
+        }));
+    }
+
+    let Some(reader) = context.pmtiles_reader() else {
+        return Ok(None);
+    };
+    let header = reader.get_header();
+    let Some(bytes) = reader
+        .get_tile(coord)
+        .await
+        .map_err(|error| AppError::Internal(format!("could not read PMTiles tile: {error}")))?
+    else {
+        return Ok(None);
+    };
+
+    Ok(Some(LoadedBasemapTile {
+        bytes,
+        tile_type: header.tile_type,
+        tile_compression: header.tile_compression,
+    }))
+}
+
+fn build_empty_tile_response() -> AppResult<axum::response::Response> {
+    axum::response::Response::builder()
+        .status(StatusCode::NO_CONTENT)
+        .body(axum::body::Body::empty())
+        .map_err(|error| {
+            AppError::Internal(format!("could not build empty tile response: {error}"))
+        })
+}
+
+fn expand_bounds(existing: Option<[f64; 4]>, next: [f64; 4]) -> [f64; 4] {
+    match existing {
+        Some(current) => {
+            let [
+                current_min_lon,
+                current_min_lat,
+                current_max_lon,
+                current_max_lat,
+            ] = current;
+            let [next_min_lon, next_min_lat, next_max_lon, next_max_lat] = next;
+            [
+                current_min_lon.min(next_min_lon),
+                current_min_lat.min(next_min_lat),
+                current_max_lon.max(next_max_lon),
+                current_max_lat.max(next_max_lat),
+            ]
+        }
+        None => next,
+    }
 }
 
 fn build_binary_response(

@@ -83,16 +83,13 @@ test("renames places and tracks from the drawer", async ({ page, request }) => {
 		page.getByRole("button", { name: "Import GPX" }).click(),
 	]);
 	expect(trackImport.status()).toBe(201);
-	await page.locator("#map").click({
-		position: {
-			x: 24,
-			y: 180,
-		},
-	});
-	await refreshButton.click();
+	const importedTrack = await trackImport.json();
+	const trackId = importedTrack.tracks[0].id;
 
+	await page.goto(
+		`/?selected=${trackId}#map=-27.46980,153.02510,12.00&object=track:${trackId}`,
+	);
 	await expect(detailPanel).toContainText("Editable Track");
-	await detailPanel.getByRole("button", { name: /Editable Track/ }).click();
 	await page.getByRole("button", { name: "Edit" }).click();
 	await page.locator("#track-edit-form input[name='title']").fill("Renamed Track");
 	await page.locator("#track-edit-form textarea[name='notes']").fill("Updated track note");
@@ -166,17 +163,13 @@ test("deletes places and tracks from the edit flow after confirmation", async ({
 		page.getByRole("button", { name: "Import GPX" }).click(),
 	]);
 	expect(trackImport.status()).toBe(201);
+	const importedTrack = await trackImport.json();
+	const trackId = importedTrack.tracks[0].id;
 
-	await page.locator("#map").click({
-		position: {
-			x: 24,
-			y: 180,
-		},
-	});
-	await refreshButton.click();
-
+	await page.goto(
+		`/?selected=${trackId}#map=-27.46980,153.02510,12.00&object=track:${trackId}`,
+	);
 	await expect(detailPanel).toContainText("Editable Track");
-	await detailPanel.getByRole("button", { name: /Editable Track/ }).click();
 	await page.getByRole("button", { name: "Edit" }).click();
 	await page.locator("#track-edit-form").getByRole("button", { name: "Delete" }).click();
 	await expect(detailPanel).toContainText("Delete this track from the database?");

@@ -5,7 +5,7 @@ use axum::{
     Json, Router,
     extract::{DefaultBodyLimit, Multipart, Path, Query, State},
     http::StatusCode,
-    routing::{get, patch, post},
+    routing::{get, post},
 };
 use chrono::{DateTime, Utc};
 use geojson::Geometry;
@@ -30,6 +30,7 @@ use crate::{
 };
 
 const MAX_GPX_UPLOAD_BYTES: usize = 64 * 1024 * 1024;
+const BROWSER_ELEVATION_EXAGGERATION: f64 = 3.0;
 
 pub fn build_router(context: Arc<AppContext>) -> Router {
     Router::new()
@@ -38,7 +39,7 @@ pub fn build_router(context: Arc<AppContext>) -> Router {
         .route("/api/places", post(create_place))
         .route(
             "/api/places/{place_id}",
-            patch(update_place).delete(delete_place),
+            get(get_place).patch(update_place).delete(delete_place),
         )
         .route(
             "/api/tracks/import",
@@ -46,7 +47,7 @@ pub fn build_router(context: Arc<AppContext>) -> Router {
         )
         .route(
             "/api/tracks/{track_id}",
-            patch(update_track).delete(delete_track),
+            get(get_track).patch(update_track).delete(delete_track),
         )
         .route("/api/map-objects", get(list_map_objects))
         .route("/api/search", get(search_map_objects))
@@ -61,11 +62,13 @@ pub fn build_router(context: Arc<AppContext>) -> Router {
         create_collection,
         list_collections,
         create_place,
+        get_place,
         update_place,
         delete_place,
         import_tracks,
         list_map_objects,
         search_map_objects,
+        get_track,
         update_track,
         delete_track,
         crate::maps_api::get_builds,
@@ -84,6 +87,7 @@ pub fn build_router(context: Arc<AppContext>) -> Router {
         crate::maps_api::get_basemap_sprite_png,
         crate::maps_api::get_basemap_sprite_json_hidpi,
         crate::maps_api::get_basemap_sprite_png_hidpi,
+        crate::maps_api::get_missing_basemap_tiles,
         crate::maps_api::get_basemap_tile
     ),
     components(schemas(
@@ -113,6 +117,7 @@ pub fn build_router(context: Arc<AppContext>) -> Router {
         crate::maps_api::ActiveLayersRequest,
         crate::maps_api::AreaExtractRequest,
         crate::maps_api::BasemapConfigResponse,
+        crate::maps_api::MissingTilesResponse,
         crate::maps_api::RebuildChunksRequest,
         crate::maps_api::WorldTo6Request
     )),
@@ -340,6 +345,38 @@ async fn create_place(
 }
 
 #[utoipa::path(
+    get,
+    path = "/api/places/{place_id}",
+    params(("place_id" = String, Path, description = "Place ID")),
+    responses(
+        (status = 200, description = "Place found", body = PlaceResponse),
+        (status = 400, description = "Invalid request", body = ErrorBody),
+        (status = 500, description = "Internal error", body = ErrorBody)
+    )
+)]
+async fn get_place(
+    State(context): State<Arc<AppContext>>,
+    Path(place_id): Path<String>,
+) -> AppResult<Json<PlaceResponse>> {
+    let model = place::Entity::find_by_id(place_id)
+        .one(context.db())
+        .await?
+        .ok_or_else(|| AppError::InvalidRequest("place does not exist".to_owned()))?;
+
+    Ok(Json(PlaceResponse {
+        id: model.id,
+        name: model.name,
+        category: model.category,
+        notes: model.notes,
+        latitude: model.latitude,
+        longitude: model.longitude,
+        visit_start: model.visit_start,
+        visit_end: model.visit_end,
+        is_public: model.is_public,
+    }))
+}
+
+#[utoipa::path(
     patch,
     path = "/api/places/{place_id}",
     params(("place_id" = String, Path, description = "Place ID")),
@@ -506,20 +543,7 @@ async fn import_tracks(
         .insert(context.db())
         .await?;
 
-        imported.push(TrackResponse {
-            id: created.id,
-            title: created.title,
-            original_filename: created.original_filename,
-            notes: created.notes,
-            geometry_json: created.geometry_json,
-            min_lat: created.min_lat,
-            min_lon: created.min_lon,
-            max_lat: created.max_lat,
-            max_lon: created.max_lon,
-            distance_m: created.distance_m,
-            start_time: created.start_time,
-            end_time: created.end_time,
-        });
+        imported.push(TrackResponse::from_model(created)?);
     }
 
     Ok((
@@ -566,6 +590,25 @@ struct TrackResponse {
     distance_m: Option<f64>,
     start_time: Option<DateTime<Utc>>,
     end_time: Option<DateTime<Utc>>,
+}
+
+impl TrackResponse {
+    fn from_model(model: track::Model) -> AppResult<Self> {
+        Ok(Self {
+            id: model.id,
+            title: model.title,
+            original_filename: model.original_filename,
+            notes: model.notes,
+            geometry_json: exaggerate_track_geometry_for_browser(&model.geometry_json)?,
+            min_lat: model.min_lat,
+            min_lon: model.min_lon,
+            max_lat: model.max_lat,
+            max_lon: model.max_lon,
+            distance_m: model.distance_m,
+            start_time: model.start_time,
+            end_time: model.end_time,
+        })
+    }
 }
 
 #[derive(Debug, Deserialize, ToSchema)]
@@ -621,21 +664,8 @@ async fn list_map_objects(
             .all(context.db())
             .await?
             .into_iter()
-            .map(|model| TrackResponse {
-                id: model.id,
-                title: model.title,
-                original_filename: model.original_filename,
-                notes: model.notes,
-                geometry_json: model.geometry_json,
-                min_lat: model.min_lat,
-                min_lon: model.min_lon,
-                max_lat: model.max_lat,
-                max_lon: model.max_lon,
-                distance_m: model.distance_m,
-                start_time: model.start_time,
-                end_time: model.end_time,
-            })
-            .collect()
+            .map(TrackResponse::from_model)
+            .collect::<AppResult<Vec<_>>>()?
     };
 
     Ok(Json(MapObjectsResponse { tracks, places }))
@@ -685,23 +715,32 @@ async fn search_map_objects(
         .all(context.db())
         .await?
         .into_iter()
-        .map(|model| TrackResponse {
-            id: model.id,
-            title: model.title,
-            original_filename: model.original_filename,
-            notes: model.notes,
-            geometry_json: model.geometry_json,
-            min_lat: model.min_lat,
-            min_lon: model.min_lon,
-            max_lat: model.max_lat,
-            max_lon: model.max_lon,
-            distance_m: model.distance_m,
-            start_time: model.start_time,
-            end_time: model.end_time,
-        })
-        .collect();
+        .map(TrackResponse::from_model)
+        .collect::<AppResult<Vec<_>>>()?;
 
     Ok(Json(MapObjectsResponse { tracks, places }))
+}
+
+#[utoipa::path(
+    get,
+    path = "/api/tracks/{track_id}",
+    params(("track_id" = String, Path, description = "Track ID")),
+    responses(
+        (status = 200, description = "Track found", body = TrackResponse),
+        (status = 400, description = "Invalid request", body = ErrorBody),
+        (status = 500, description = "Internal error", body = ErrorBody)
+    )
+)]
+async fn get_track(
+    State(context): State<Arc<AppContext>>,
+    Path(track_id): Path<String>,
+) -> AppResult<Json<TrackResponse>> {
+    let model = track::Entity::find_by_id(track_id)
+        .one(context.db())
+        .await?
+        .ok_or_else(|| AppError::InvalidRequest("track does not exist".to_owned()))?;
+
+    Ok(Json(TrackResponse::from_model(model)?))
 }
 
 #[utoipa::path(
@@ -732,20 +771,7 @@ async fn update_track(
     model.updated_at = Set(now);
     let updated = model.update(context.db()).await?;
 
-    Ok(Json(TrackResponse {
-        id: updated.id,
-        title: updated.title,
-        original_filename: updated.original_filename,
-        notes: updated.notes,
-        geometry_json: updated.geometry_json,
-        min_lat: updated.min_lat,
-        min_lon: updated.min_lon,
-        max_lat: updated.max_lat,
-        max_lon: updated.max_lon,
-        distance_m: updated.distance_m,
-        start_time: updated.start_time,
-        end_time: updated.end_time,
-    }))
+    Ok(Json(TrackResponse::from_model(updated)?))
 }
 
 #[utoipa::path(
@@ -907,8 +933,7 @@ fn place_condition(query: &MapObjectsQuery) -> AppResult<Condition> {
     let mut condition = Condition::all()
         .add(place::Column::Latitude.gte(query.min_lat))
         .add(place::Column::Latitude.lte(query.max_lat))
-        .add(place::Column::Longitude.gte(query.min_lon))
-        .add(place::Column::Longitude.lte(query.max_lon));
+        .add(place_longitude_condition(query));
 
     if let Some(collection_id) = &query.collection_id {
         condition = condition.add(
@@ -955,12 +980,23 @@ fn place_condition(query: &MapObjectsQuery) -> AppResult<Condition> {
     Ok(condition)
 }
 
+fn place_longitude_condition(query: &MapObjectsQuery) -> Condition {
+    if query.min_lon <= query.max_lon {
+        return Condition::all()
+            .add(place::Column::Longitude.gte(query.min_lon))
+            .add(place::Column::Longitude.lte(query.max_lon));
+    }
+
+    Condition::any()
+        .add(place::Column::Longitude.gte(query.min_lon))
+        .add(place::Column::Longitude.lte(query.max_lon))
+}
+
 fn track_condition(query: &MapObjectsQuery) -> AppResult<Condition> {
     let mut condition = Condition::all()
         .add(track::Column::MinLat.lte(query.max_lat))
         .add(track::Column::MaxLat.gte(query.min_lat))
-        .add(track::Column::MinLon.lte(query.max_lon))
-        .add(track::Column::MaxLon.gte(query.min_lon));
+        .add(track_longitude_condition(query));
 
     if let Some(collection_id) = &query.collection_id {
         condition = condition.add(
@@ -1007,6 +1043,18 @@ fn track_condition(query: &MapObjectsQuery) -> AppResult<Condition> {
     Ok(condition)
 }
 
+fn track_longitude_condition(query: &MapObjectsQuery) -> Condition {
+    if query.min_lon <= query.max_lon {
+        return Condition::all()
+            .add(track::Column::MinLon.lte(query.max_lon))
+            .add(track::Column::MaxLon.gte(query.min_lon));
+    }
+
+    Condition::any()
+        .add(track::Column::MaxLon.gte(query.min_lon))
+        .add(track::Column::MinLon.lte(query.max_lon))
+}
+
 fn validate_collection_kind(kind: &str) -> AppResult<()> {
     match kind {
         "trip" | "future" | "past" | "general" => Ok(()),
@@ -1045,7 +1093,11 @@ fn summarize_gpx_track(parsed_track: &gpx::Track) -> AppResult<TrackImportSummar
             let point = waypoint.point();
             let lon = point.x();
             let lat = point.y();
-            segment_coords.push(vec![lon, lat]);
+            let mut coordinate = vec![lon, lat];
+            if let Some(elevation) = waypoint.elevation {
+                coordinate.push(elevation);
+            }
+            segment_coords.push(coordinate);
             min_lat = min_lat.min(lat);
             min_lon = min_lon.min(lon);
             max_lat = max_lat.max(lat);
@@ -1102,6 +1154,51 @@ fn summarize_gpx_track(parsed_track: &gpx::Track) -> AppResult<TrackImportSummar
         start_time,
         end_time,
     })
+}
+
+fn exaggerate_track_geometry_for_browser(geometry_json: &str) -> AppResult<String> {
+    let mut geometry =
+        serde_json::from_str::<serde_json::Value>(geometry_json).map_err(|error| {
+            AppError::Internal(format!("stored track geometry is invalid: {error}"))
+        })?;
+    if let Some(coordinates) = geometry.get_mut("coordinates") {
+        exaggerate_coordinate_elevations(coordinates)?;
+    }
+    serde_json::to_string(&geometry).map_err(|error| {
+        AppError::Internal(format!(
+            "could not serialize exaggerated track geometry: {error}"
+        ))
+    })
+}
+
+fn exaggerate_coordinate_elevations(value: &mut serde_json::Value) -> AppResult<()> {
+    match value {
+        serde_json::Value::Array(items) => {
+            if let [longitude, latitude, elevation_value, ..] = items.as_mut_slice()
+                && longitude.as_f64().is_some()
+                && latitude.as_f64().is_some()
+                && elevation_value.as_f64().is_some()
+            {
+                let elevation = elevation_value.as_f64().ok_or_else(|| {
+                    AppError::Internal("track elevation should be numeric".to_owned())
+                })?;
+                let exaggerated =
+                    serde_json::Number::from_f64(elevation * BROWSER_ELEVATION_EXAGGERATION)
+                        .ok_or_else(|| {
+                            AppError::Internal(
+                                "exaggerated track elevation was not finite".to_owned(),
+                            )
+                        })?;
+                *elevation_value = serde_json::Value::Number(exaggerated);
+                return Ok(());
+            }
+            for item in items {
+                exaggerate_coordinate_elevations(item)?;
+            }
+            Ok(())
+        }
+        _ => Ok(()),
+    }
 }
 
 fn gpx_time_to_utc(value: gpx::Time) -> AppResult<DateTime<Utc>> {

@@ -447,13 +447,22 @@ button.secondary.active {
 	font-size: 0.8rem;
 }
 
-.map-corner-chip {
+.map-corner-actions {
 	position: absolute;
 	right: 18px;
 	bottom: 18px;
 	z-index: 2;
+	display: flex;
+	align-items: center;
+	gap: 8px;
+}
+
+.map-corner-chip {
 	display: inline-flex;
 	align-items: center;
+	justify-content: center;
+	min-width: 34px;
+	min-height: 34px;
 	padding: 8px 12px;
 	border-radius: 999px;
 	background: rgba(255, 250, 240, 0.92);
@@ -462,6 +471,16 @@ button.secondary.active {
 	color: var(--ink);
 	font-size: 0.8rem;
 	text-decoration: none;
+}
+
+.map-corner-chip[hidden] {
+	display: none;
+}
+
+.map-warning-chip {
+	background: rgba(187, 95, 58, 0.14);
+	color: var(--accent-dark);
+	font-weight: 800;
 }
 
 .map-corner-chip:hover {

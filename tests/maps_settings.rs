@@ -548,9 +548,10 @@ async fn materializes_world_and_area_chunks_then_rebuilds_them_for_a_new_selecte
         Some("http://maps.test/api/basemap/fonts/{fontstack}/{range}.pbf")
     );
     assert_eq!(
-        style_payload["sources"]["protomaps"]["url"].as_str(),
-        Some("http://maps.test/api/basemap/tilejson.json")
+        style_payload["sources"]["protomaps"]["tiles"][0].as_str(),
+        Some("http://maps.test/api/basemap/tiles/{z}/{x}/{y}")
     );
+    assert_eq!(style_payload["sources"]["protomaps"]["maxzoom"], 6);
 
     let tilejson_response = router
         .clone()
@@ -623,6 +624,65 @@ async fn materializes_world_and_area_chunks_then_rebuilds_them_for_a_new_selecte
         .expect("tile request should succeed");
     assert_eq!(fallback_tile_response.status(), StatusCode::OK);
     assert_eq!(bytes_response(fallback_tile_response).await, b"coarse-a");
+
+    let missing_tile_response = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/api/basemap/tiles/2/3/1")
+                .body(Body::empty())
+                .expect("missing tile request should build"),
+        )
+        .await
+        .expect("missing tile request should succeed");
+    assert_eq!(missing_tile_response.status(), StatusCode::NO_CONTENT);
+    assert!(bytes_response(missing_tile_response).await.is_empty());
+
+    let (missing_min_lon, missing_min_lat, missing_max_lon, missing_max_lat) =
+        build_inner_bbox(2, 3, 1);
+    let missing_coverage_response = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri(format!(
+                    "/api/basemap/missing-tiles?min_lon={missing_min_lon}&min_lat={missing_min_lat}&max_lon={missing_max_lon}&max_lat={missing_max_lat}&tile_zoom=2"
+                ))
+                .body(Body::empty())
+                .expect("missing coverage request should build"),
+        )
+        .await
+        .expect("missing coverage request should succeed");
+    assert_eq!(missing_coverage_response.status(), StatusCode::OK);
+    let missing_coverage_payload = json_response(missing_coverage_response).await;
+    assert_eq!(missing_coverage_payload["missing"], true);
+    assert_eq!(missing_coverage_payload["tile_zoom"], 2);
+    assert_eq!(missing_coverage_payload["missing_tile_count"], 1);
+    assert_eq!(missing_coverage_payload["max_zoom"], 2);
+    assert_eq!(
+        missing_coverage_payload["bounds"],
+        json!([90.0, 0.0, 180.0, 66.51326044311186])
+    );
+
+    let (covered_min_lon, covered_min_lat, covered_max_lon, covered_max_lat) =
+        build_inner_bbox(2, 2, 1);
+    let covered_response = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri(format!(
+                    "/api/basemap/missing-tiles?min_lon={covered_min_lon}&min_lat={covered_min_lat}&max_lon={covered_max_lon}&max_lat={covered_max_lat}&tile_zoom=2"
+                ))
+                .body(Body::empty())
+                .expect("covered tile request should build"),
+        )
+        .await
+        .expect("covered tile request should succeed");
+    assert_eq!(covered_response.status(), StatusCode::OK);
+    let covered_payload = json_response(covered_response).await;
+    assert_eq!(covered_payload["missing"], false);
+    assert_eq!(covered_payload["missing_tile_count"], 0);
+    assert!(covered_payload["bounds"].is_null());
+    assert!(covered_payload["max_zoom"].is_null());
 
     let switch_build_response = post_json(
         &router,
