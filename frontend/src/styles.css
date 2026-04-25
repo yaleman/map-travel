@@ -447,6 +447,71 @@ button.secondary.active {
 	font-size: 0.8rem;
 }
 
+.elevation-relief {
+	display: grid;
+	gap: 8px;
+	padding: 10px;
+	border: 1px solid var(--line);
+	border-radius: 8px;
+	background: rgba(255, 255, 255, 0.58);
+}
+
+.elevation-relief-header {
+	display: flex;
+	align-items: baseline;
+	justify-content: space-between;
+	gap: 10px;
+	font-size: 0.9rem;
+}
+
+.elevation-relief-header span {
+	color: var(--muted);
+	font-size: 0.78rem;
+}
+
+.elevation-relief-map {
+	display: block;
+	width: 100%;
+	height: 118px;
+	overflow: visible;
+}
+
+.elevation-relief-grid {
+	fill: none;
+	stroke: rgba(35, 53, 48, 0.14);
+	stroke-width: 1;
+	vector-effect: non-scaling-stroke;
+}
+
+.elevation-relief-area {
+	fill: rgba(187, 95, 58, 0.22);
+}
+
+.elevation-relief-line {
+	fill: none;
+	stroke: var(--accent-dark);
+	stroke-linecap: round;
+	stroke-linejoin: round;
+	stroke-width: 3;
+	vector-effect: non-scaling-stroke;
+}
+
+.elevation-relief-label,
+.elevation-relief-time {
+	fill: var(--muted);
+	font-size: 10px;
+	font-weight: 700;
+}
+
+.elevation-relief-label-high,
+.elevation-relief-label-low {
+	fill: var(--ink);
+}
+
+.elevation-relief-time-end {
+	text-anchor: end;
+}
+
 .map-corner-actions {
 	position: absolute;
 	right: 18px;

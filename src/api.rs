@@ -30,8 +30,6 @@ use crate::{
 };
 
 const MAX_GPX_UPLOAD_BYTES: usize = 64 * 1024 * 1024;
-const BROWSER_ELEVATION_EXAGGERATION: f64 = 3.0;
-
 pub fn build_router(context: Arc<AppContext>) -> Router {
     Router::new()
         .route("/api/collections", post(create_collection))
@@ -543,7 +541,7 @@ async fn import_tracks(
         .insert(context.db())
         .await?;
 
-        imported.push(TrackResponse::from_model(created)?);
+        imported.push(TrackResponse::from_model(created));
     }
 
     Ok((
@@ -593,13 +591,13 @@ struct TrackResponse {
 }
 
 impl TrackResponse {
-    fn from_model(model: track::Model) -> AppResult<Self> {
-        Ok(Self {
+    fn from_model(model: track::Model) -> Self {
+        Self {
             id: model.id,
             title: model.title,
             original_filename: model.original_filename,
             notes: model.notes,
-            geometry_json: exaggerate_track_geometry_for_browser(&model.geometry_json)?,
+            geometry_json: model.geometry_json,
             min_lat: model.min_lat,
             min_lon: model.min_lon,
             max_lat: model.max_lat,
@@ -607,7 +605,7 @@ impl TrackResponse {
             distance_m: model.distance_m,
             start_time: model.start_time,
             end_time: model.end_time,
-        })
+        }
     }
 }
 
@@ -665,7 +663,7 @@ async fn list_map_objects(
             .await?
             .into_iter()
             .map(TrackResponse::from_model)
-            .collect::<AppResult<Vec<_>>>()?
+            .collect()
     };
 
     Ok(Json(MapObjectsResponse { tracks, places }))
@@ -716,7 +714,7 @@ async fn search_map_objects(
         .await?
         .into_iter()
         .map(TrackResponse::from_model)
-        .collect::<AppResult<Vec<_>>>()?;
+        .collect();
 
     Ok(Json(MapObjectsResponse { tracks, places }))
 }
@@ -740,7 +738,7 @@ async fn get_track(
         .await?
         .ok_or_else(|| AppError::InvalidRequest("track does not exist".to_owned()))?;
 
-    Ok(Json(TrackResponse::from_model(model)?))
+    Ok(Json(TrackResponse::from_model(model)))
 }
 
 #[utoipa::path(
@@ -771,7 +769,7 @@ async fn update_track(
     model.updated_at = Set(now);
     let updated = model.update(context.db()).await?;
 
-    Ok(Json(TrackResponse::from_model(updated)?))
+    Ok(Json(TrackResponse::from_model(updated)))
 }
 
 #[utoipa::path(
@@ -1154,51 +1152,6 @@ fn summarize_gpx_track(parsed_track: &gpx::Track) -> AppResult<TrackImportSummar
         start_time,
         end_time,
     })
-}
-
-fn exaggerate_track_geometry_for_browser(geometry_json: &str) -> AppResult<String> {
-    let mut geometry =
-        serde_json::from_str::<serde_json::Value>(geometry_json).map_err(|error| {
-            AppError::Internal(format!("stored track geometry is invalid: {error}"))
-        })?;
-    if let Some(coordinates) = geometry.get_mut("coordinates") {
-        exaggerate_coordinate_elevations(coordinates)?;
-    }
-    serde_json::to_string(&geometry).map_err(|error| {
-        AppError::Internal(format!(
-            "could not serialize exaggerated track geometry: {error}"
-        ))
-    })
-}
-
-fn exaggerate_coordinate_elevations(value: &mut serde_json::Value) -> AppResult<()> {
-    match value {
-        serde_json::Value::Array(items) => {
-            if let [longitude, latitude, elevation_value, ..] = items.as_mut_slice()
-                && longitude.as_f64().is_some()
-                && latitude.as_f64().is_some()
-                && elevation_value.as_f64().is_some()
-            {
-                let elevation = elevation_value.as_f64().ok_or_else(|| {
-                    AppError::Internal("track elevation should be numeric".to_owned())
-                })?;
-                let exaggerated =
-                    serde_json::Number::from_f64(elevation * BROWSER_ELEVATION_EXAGGERATION)
-                        .ok_or_else(|| {
-                            AppError::Internal(
-                                "exaggerated track elevation was not finite".to_owned(),
-                            )
-                        })?;
-                *elevation_value = serde_json::Value::Number(exaggerated);
-                return Ok(());
-            }
-            for item in items {
-                exaggerate_coordinate_elevations(item)?;
-            }
-            Ok(())
-        }
-        _ => Ok(()),
-    }
 }
 
 fn gpx_time_to_utc(value: gpx::Time) -> AppResult<DateTime<Utc>> {

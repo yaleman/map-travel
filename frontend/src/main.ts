@@ -13,11 +13,14 @@ import {
 } from "./missing-tiles";
 import { displayTrackColor } from "./track-display";
 import {
-	createElevatedTracksLayer,
+	buildElevatedTrackExtrusionFeatureCollection,
+	elevatedTrackExtrusionStats,
 	formatElevationRange,
+	trackElevationProfile,
 	trackElevationRange,
-	type ElevatedTracksLayer,
-	type ElevatedTracksLayerStats,
+	type ElevationProfile,
+	type ElevatedTrackExtrusionProperties,
+	type ElevatedTrackExtrusionStats,
 } from "./track-elevation";
 import { filterVisibleTracks } from "./track-visibility";
 import {
@@ -201,7 +204,7 @@ interface SelectedMapObjectState {
 }
 
 interface MapTravelDebug {
-	elevatedTrackStats: () => ElevatedTracksLayerStats | null;
+	elevatedTrackExtrusionStats: () => ElevatedTrackExtrusionStats;
 	hasLayer: (id: string) => boolean;
 }
 
@@ -285,7 +288,11 @@ let missingTilesTimer: number | null = null;
 let missingTilesRequestSequence = 0;
 let lastAppliedSettingsPrefillSearch = "";
 let pendingSettingsAreaFit = false;
-let elevatedTracksLayer: ElevatedTracksLayer | null = null;
+let elevatedTrackExtrusionData: GeoJSON.FeatureCollection<
+	GeoJSON.Polygon,
+	ElevatedTrackExtrusionProperties
+> =
+	buildElevatedTrackExtrusionFeatureCollection([]);
 const scheduleViewportFragmentUpdate = createDebouncedViewportFragmentUpdater(
 	writeWorkspaceFragment,
 	250,
@@ -447,7 +454,8 @@ function hideMissingTilesWarning(): void {
 
 function installMapTravelDebug(): void {
 	window.__mapTravelDebug = {
-		elevatedTrackStats: () => elevatedTracksLayer?.getStats() ?? null,
+		elevatedTrackExtrusionStats: () =>
+			elevatedTrackExtrusionStats(elevatedTrackExtrusionData),
 		hasLayer: (id: string) => Boolean(workspaceMap.getLayer(id)),
 	};
 }
@@ -486,12 +494,14 @@ function currentWorkspaceFragmentState(): ViewportFragmentState {
 function selectMapObject(object: SelectedMapObjectState): void {
 	selectedMapObject = object;
 	updateWorkspaceSelectionSources();
+	updateElevatedTrackExtrusions();
 	writeWorkspaceFragment(currentWorkspaceFragmentState());
 }
 
 function clearSelectedMapObject(): void {
 	selectedMapObject = null;
 	updateWorkspaceSelectionSources();
+	updateElevatedTrackExtrusions();
 	writeWorkspaceFragment(currentWorkspaceFragmentState());
 }
 
@@ -887,6 +897,13 @@ function ensureWorkspaceOverlayLayers(): void {
 		});
 	}
 
+	if (!workspaceMap.getSource("elevated-track-extrusions")) {
+		workspaceMap.addSource("elevated-track-extrusions", {
+			type: "geojson",
+			data: elevatedTrackExtrusionData,
+		});
+	}
+
 	if (!workspaceMap.getSource("selected-place")) {
 		workspaceMap.addSource("selected-place", {
 			type: "geojson",
@@ -920,6 +937,26 @@ function ensureWorkspaceOverlayLayers(): void {
 			if (track) {
 				renderTrackDetail(track);
 			}
+		});
+	}
+
+	if (!workspaceMap.getLayer("elevated-track-extrusions")) {
+		workspaceMap.addLayer({
+			id: "elevated-track-extrusions",
+			type: "fill-extrusion",
+			source: "elevated-track-extrusions",
+			paint: {
+				"fill-extrusion-base": 0,
+				"fill-extrusion-height": ["get", "height_m"],
+				"fill-extrusion-color": [
+					"case",
+					["boolean", ["get", "selected"], false],
+					"#bb5f3a",
+					"#d7a18d",
+				],
+				"fill-extrusion-opacity": 0.78,
+				"fill-extrusion-vertical-gradient": true,
+			},
 		});
 	}
 
@@ -998,13 +1035,6 @@ function ensureWorkspaceOverlayLayers(): void {
 			},
 		});
 	}
-
-	if (!elevatedTracksLayer) {
-		elevatedTracksLayer = createElevatedTracksLayer("elevated-tracks-3d");
-	}
-	if (!workspaceMap.getLayer("elevated-tracks-3d")) {
-		workspaceMap.addLayer(elevatedTracksLayer);
-	}
 }
 
 function ensureSettingsMapLayers(): void {
@@ -1072,7 +1102,7 @@ function updateWorkspaceOverlaySources(): void {
 			),
 		);
 	}
-	updateElevatedTracksLayer();
+	updateElevatedTrackExtrusions();
 	if (placeSource?.type === "geojson") {
 		placeSource.setData(buildPlaceFeatureCollection(lastData.places));
 	}
@@ -1090,12 +1120,35 @@ function updateWorkspaceSelectionSources(): void {
 	}
 }
 
-function updateElevatedTracksLayer(): void {
-	elevatedTracksLayer?.setTracks(
-		filterVisibleTracks(lastData.tracks, hiddenTrackIds).map((track) => ({
+function updateElevatedTrackExtrusions(): void {
+	elevatedTrackExtrusionData = buildElevatedTrackExtrusionFeatureCollection(
+		elevatedTracksForMap().map((track) => ({
+			id: track.id,
 			geometry: parseTrackGeometry(track),
+			selected:
+				selectedMapObject?.objectType === "track" &&
+				selectedMapObject.id === track.id,
 		})),
 	);
+	const source = workspaceMap.getSource("elevated-track-extrusions");
+	if (source?.type === "geojson") {
+		source.setData(elevatedTrackExtrusionData);
+	}
+}
+
+function elevatedTracksForMap(): TrackRecord[] {
+	const tracks = filterVisibleTracks(lastData.tracks, hiddenTrackIds);
+	if (selectedMapObject?.objectType !== "track") {
+		return tracks;
+	}
+	if (hiddenTrackIds.has(selectedMapObject.id)) {
+		return tracks;
+	}
+	const selectedTrack = findTrackById(selectedMapObject.id);
+	if (!selectedTrack || tracks.some((track) => track.id === selectedTrack.id)) {
+		return tracks;
+	}
+	return [...tracks, selectedTrack];
 }
 
 function renderDrawerEmpty(): void {
@@ -1108,7 +1161,9 @@ function updateDrawerMessage(message: string): void {
 }
 
 function renderTrackDetail(track: TrackRecord): void {
-	const elevationRange = trackElevationRange(parseTrackGeometry(track));
+	const geometry = parseTrackGeometry(track);
+	const elevationRange = trackElevationRange(geometry);
+	const elevationProfile = trackElevationProfile(geometry);
 	selectMapObject({
 		id: track.id,
 		objectType: "track",
@@ -1134,6 +1189,7 @@ function renderTrackDetail(track: TrackRecord): void {
         ${elevationRange ? `<div><strong>Elevation</strong><br />${escapeHtml(formatElevationRange(elevationRange))}</div>` : ""}
         <div><strong>Bounds</strong><br />${track.min_lat.toFixed(4)}, ${track.min_lon.toFixed(4)} → ${track.max_lat.toFixed(4)}, ${track.max_lon.toFixed(4)}</div>
       </div>
+      ${elevationProfile ? renderElevationReliefMap(elevationProfile, track) : ""}
     </div>
   `;
 
@@ -1155,6 +1211,77 @@ function renderTrackDetail(track: TrackRecord): void {
 			renderTrackDetail(track);
 		},
 	);
+}
+
+function renderElevationReliefMap(
+	profile: ElevationProfile,
+	track: TrackRecord,
+): string {
+	const width = 320;
+	const height = 118;
+	const left = 10;
+	const right = 10;
+	const top = 12;
+	const bottom = 28;
+	const plotWidth = width - left - right;
+	const plotHeight = height - top - bottom;
+	const baselineY = top + plotHeight;
+	const min = profile.range.min;
+	const max = profile.range.max;
+	const span = max - min;
+	const pointFor = (point: { progress: number; elevationMeters: number }) => {
+		const x = left + point.progress * plotWidth;
+		const normalized = span === 0 ? 0.5 : (point.elevationMeters - min) / span;
+		const y = top + (1 - normalized) * plotHeight;
+		return { x, y };
+	};
+	const linePaths = profile.segments
+		.map((segment) =>
+			segment.points
+				.map((point, index) => {
+					const { x, y } = pointFor(point);
+					return `${index === 0 ? "M" : "L"} ${x.toFixed(2)} ${y.toFixed(2)}`;
+				})
+				.join(" "),
+		)
+		.join(" ");
+	const areaPaths = profile.segments
+		.map((segment) => {
+			const points = segment.points.map(pointFor);
+			const first = points[0];
+			const last = points.at(-1);
+			if (!first || !last) {
+				return "";
+			}
+			return [
+				`M ${first.x.toFixed(2)} ${baselineY.toFixed(2)}`,
+				...points.map(({ x, y }) => `L ${x.toFixed(2)} ${y.toFixed(2)}`),
+				`L ${last.x.toFixed(2)} ${baselineY.toFixed(2)}`,
+				"Z",
+			].join(" ");
+		})
+		.filter(Boolean)
+		.join(" ");
+	const startLabel = track.start_time ? formatCompactTimestamp(track.start_time) : "Start";
+	const endLabel = track.end_time ? formatCompactTimestamp(track.end_time) : "End";
+
+	return `
+    <div class="elevation-relief" aria-label="Elevation profile">
+      <div class="elevation-relief-header">
+        <strong>Elevation profile</strong>
+        <span>${escapeHtml(formatElevationRange(profile.range))}</span>
+      </div>
+      <svg class="elevation-relief-map" viewBox="0 0 ${width} ${height}" role="img" aria-label="Elevation change over time" preserveAspectRatio="none">
+        <path class="elevation-relief-grid" d="M ${left} ${top} H ${width - right} M ${left} ${baselineY} H ${width - right}" />
+        <path class="elevation-relief-area" d="${areaPaths}" />
+        <path class="elevation-relief-line" d="${linePaths}" />
+        <text class="elevation-relief-label elevation-relief-label-high" x="${left}" y="${top + 5}">${escapeHtml(`${Math.round(max)} m`)}</text>
+        <text class="elevation-relief-label elevation-relief-label-low" x="${left}" y="${baselineY - 4}">${escapeHtml(`${Math.round(min)} m`)}</text>
+        <text class="elevation-relief-time" x="${left}" y="${height - 7}">${escapeHtml(startLabel)}</text>
+        <text class="elevation-relief-time elevation-relief-time-end" x="${width - right}" y="${height - 7}">${escapeHtml(endLabel)}</text>
+      </svg>
+    </div>
+  `;
 }
 
 function renderPlaceDetail(place: PlaceRecord): void {
@@ -2293,6 +2420,13 @@ function describeChunkState(chunk: MapsChunkRecord): {
 
 function formatTimestamp(value: string): string {
 	return new Date(value).toLocaleString();
+}
+
+function formatCompactTimestamp(value: string): string {
+	return new Date(value).toLocaleTimeString([], {
+		hour: "2-digit",
+		minute: "2-digit",
+	});
 }
 
 function formatDistance(distanceMeters: number): string {

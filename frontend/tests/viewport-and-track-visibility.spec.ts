@@ -69,20 +69,24 @@ test("updates the fragment on viewport changes and keeps hidden tracks in the ob
 		page.getByRole("button", { name: "Import GPX" }).click(),
 	]);
 	expect(trackImport.status()).toBe(201);
+	const importedTrack = await trackImport.json();
+	const trackId = importedTrack.tracks[0].id;
 
 	await page.getByRole("button", { name: "Refresh" }).click();
 
 	const detailPanel = page.locator("#detail-panel");
 	await expect(detailPanel).toContainText("Hideable Track");
 	await detailPanel.getByRole("button", { name: /Hideable Track/ }).click();
-	await expect(detailPanel).toContainText("300-480 m");
+	await expect(detailPanel).toContainText("100-160 m");
+	await expect(detailPanel).toContainText("Elevation profile");
+	await expect(detailPanel.locator(".elevation-relief-map")).toBeVisible();
 	await expect
 		.poll(() =>
 			page.evaluate(
 				() =>
 					Boolean(
 						(window as typeof window & { __mapTravelDebug?: { hasLayer: (id: string) => boolean } })
-							.__mapTravelDebug?.hasLayer("elevated-tracks-3d"),
+							.__mapTravelDebug?.hasLayer("elevated-track-extrusions"),
 					),
 			),
 		)
@@ -93,24 +97,51 @@ test("updates the fragment on viewport changes and keeps hidden tracks in the ob
 				const stats = (
 					window as typeof window & {
 						__mapTravelDebug?: {
-							elevatedTrackStats: () => {
-								curtainVertexCount: number;
-								lineVertexCount: number;
-							} | null;
+							elevatedTrackExtrusionStats: () => {
+								featureCount: number;
+								selectedFeatureCount: number;
+								maxHeightM: number;
+							};
 						};
 					}
-				).__mapTravelDebug?.elevatedTrackStats();
+				).__mapTravelDebug?.elevatedTrackExtrusionStats();
 				return {
-					curtainVertexCount: stats?.curtainVertexCount ?? 0,
-					lineVertexCount: stats?.lineVertexCount ?? 0,
+					featureCount: stats?.featureCount ?? 0,
+					selectedFeatureCount: stats?.selectedFeatureCount ?? 0,
+					maxHeightM: stats?.maxHeightM ?? 0,
 				};
 			}),
 		)
-		.toEqual({ curtainVertexCount: 6, lineVertexCount: 2 });
+		.toEqual({ featureCount: 1, selectedFeatureCount: 1, maxHeightM: 130 });
 	await page.getByRole("button", { name: "Hide from map" }).click();
 	await expect(
 		page.getByRole("button", { name: "Show on map" }),
 	).toBeVisible();
+	await expect
+		.poll(() =>
+			page.evaluate(
+				() =>
+					(window as typeof window & {
+						__mapTravelDebug?: {
+							elevatedTrackExtrusionStats: () => { featureCount: number };
+						};
+					}).__mapTravelDebug?.elevatedTrackExtrusionStats().featureCount ?? 0,
+			),
+		)
+		.toBe(0);
+	await page.getByRole("button", { name: "Show on map" }).click();
+	await expect
+		.poll(() =>
+			page.evaluate(
+				() =>
+					(window as typeof window & {
+						__mapTravelDebug?: {
+							elevatedTrackExtrusionStats: () => { featureCount: number };
+						};
+					}).__mapTravelDebug?.elevatedTrackExtrusionStats().featureCount ?? 0,
+			),
+		)
+		.toBe(1);
 
 	await page.locator("#map").click({
 		position: {
@@ -123,6 +154,30 @@ test("updates the fragment on viewport changes and keeps hidden tracks in the ob
 	await expect(
 		detailPanel.getByRole("button", { name: /Hideable Track/ }),
 	).toBeVisible();
+
+	await page.goto(`/#map=0.00000,0.00000,12.00&object=track:${trackId}`);
+	await page.reload();
+	await expect(detailPanel).toContainText("Hideable Track");
+	await expect
+		.poll(() =>
+			page.evaluate(
+				() =>
+					(window as typeof window & {
+						__mapTravelDebug?: {
+							elevatedTrackExtrusionStats: () => {
+								featureCount: number;
+								selectedFeatureCount: number;
+								maxHeightM: number;
+							};
+						};
+					}).__mapTravelDebug?.elevatedTrackExtrusionStats() ?? {
+						featureCount: 0,
+						selectedFeatureCount: 0,
+						maxHeightM: 0,
+					},
+			),
+		)
+		.toEqual({ featureCount: 1, selectedFeatureCount: 1, maxHeightM: 130 });
 });
 
 test("warns about missing local map tiles and preselects a settings extract", async ({

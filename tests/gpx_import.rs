@@ -124,8 +124,8 @@ async fn imports_a_gpx_track_and_makes_it_queryable_on_the_map() {
         serde_json::json!({
             "type": "LineString",
             "coordinates": [
-                [170.0937, -43.7219, 3751.5],
-                [170.1049, -43.7201, 3975.75]
+                [170.0937, -43.7219, 1250.5],
+                [170.1049, -43.7201, 1325.25]
             ]
         })
     );
@@ -157,8 +157,8 @@ async fn imports_a_gpx_track_and_makes_it_queryable_on_the_map() {
         serde_json::json!({
             "type": "LineString",
             "coordinates": [
-                [170.0937, -43.7219, 3751.5],
-                [170.1049, -43.7201, 3975.75]
+                [170.0937, -43.7219, 1250.5],
+                [170.1049, -43.7201, 1325.25]
             ]
         })
     );
