@@ -478,13 +478,8 @@ async fn materializes_world_and_area_chunks_then_rebuilds_them_for_a_new_selecte
         jobs_after_initial_download_payload["jobs"]
             .as_array()
             .expect("jobs should be an array")
-            .iter()
-            .all(|job| {
-                job["progress_percent"].as_i64() == Some(100)
-                    && job["segments_total"].as_i64().unwrap_or_default() > 0
-                    && job["segments_done"] == job["segments_total"]
-                    && job["current_step"].as_str() == Some("Completed")
-            })
+            .is_empty(),
+        "completed jobs should be hidden from the jobs list"
     );
 
     let active_layers_response = post_json(
@@ -889,6 +884,70 @@ async fn cancels_running_world_job_and_rejects_duplicate_world_requests() {
         .expect("chunks should be an array");
     assert_eq!(chunks.len(), 1);
     assert_eq!(chunks[0]["selected_build_ready"].as_bool(), Some(false));
+
+    shutdown_tx.send(()).expect("mock server should shut down");
+    handle.await.expect("mock server task should finish");
+}
+
+#[tokio::test]
+async fn keeps_failed_and_cancelled_jobs_visible_while_hiding_completed_jobs() {
+    let temp_dir = TempDir::new().expect("temp dir should be created");
+    let build_path = temp_dir.path().join("20260421.pmtiles");
+    let build_bytes = create_source_pmtiles(&build_path, b"region-a", b"coarse-a");
+
+    let (base_url, shutdown_tx, handle) = spawn_mock_server(vec![MockBuild {
+        key: "20260421.pmtiles".to_owned(),
+        bytes: Arc::new(build_bytes),
+    }])
+    .await;
+
+    let context = Arc::new(
+        AppContext::bootstrap(app_config(&temp_dir, &base_url))
+            .await
+            .expect("bootstrap should succeed"),
+    );
+    let now = Utc::now().to_rfc3339();
+    let insert_sql = format!(
+        "INSERT INTO map_jobs \
+         (id, kind, status, build_key, chunk_id, archive_id, error_message, current_step, progress_percent, segments_done, segments_total, created_at, updated_at, started_at, finished_at) \
+         VALUES \
+         ('completed-job', 'world-to-6', 'completed', '20260421.pmtiles', 'world-to-6', NULL, NULL, 'Completed', 100, 1, 1, '{now}', '{now}', '{now}', '{now}'), \
+         ('failed-job', 'world-to-6', 'failed', '20260421.pmtiles', 'world-to-6', NULL, 'download failed', 'Failed', 50, 1, 2, '{now}', '{now}', '{now}', '{now}'), \
+         ('cancelled-job', 'world-to-6', 'cancelled', '20260421.pmtiles', 'world-to-6', NULL, NULL, 'Cancelled', 10, 0, 2, '{now}', '{now}', '{now}', '{now}')"
+    );
+    context
+        .db()
+        .execute_unprepared(&insert_sql)
+        .await
+        .expect("job insert should succeed");
+    let router = build_router(context);
+
+    let jobs_response = router
+        .oneshot(
+            Request::builder()
+                .uri("/api/settings/maps/jobs")
+                .body(Body::empty())
+                .expect("jobs request should build"),
+        )
+        .await
+        .expect("jobs request should succeed");
+    let jobs_payload = json_response(jobs_response).await;
+    let jobs = jobs_payload["jobs"]
+        .as_array()
+        .expect("jobs should be an array");
+    assert_eq!(jobs.len(), 2);
+    assert!(
+        jobs.iter()
+            .all(|job| job["status"].as_str() != Some("completed"))
+    );
+    assert!(
+        jobs.iter()
+            .any(|job| job["id"].as_str() == Some("failed-job"))
+    );
+    assert!(
+        jobs.iter()
+            .any(|job| job["id"].as_str() == Some("cancelled-job"))
+    );
 
     shutdown_tx.send(()).expect("mock server should shut down");
     handle.await.expect("mock server task should finish");

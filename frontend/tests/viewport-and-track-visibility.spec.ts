@@ -143,6 +143,45 @@ test("updates the fragment on viewport changes and keeps hidden tracks in the ob
 		)
 		.toBe(1);
 
+	await page.getByRole("button", { name: "Settings" }).click();
+	const renderGpxHeight = page.locator("#render-gpx-height");
+	await expect(renderGpxHeight).toBeChecked();
+	await renderGpxHeight.setChecked(false);
+	await expect
+		.poll(() =>
+			page.evaluate(
+				() =>
+					(window as typeof window & {
+						__mapTravelDebug?: {
+							elevatedTrackExtrusionStats: () => { featureCount: number };
+						};
+					}).__mapTravelDebug?.elevatedTrackExtrusionStats().featureCount ?? 0,
+			),
+		)
+		.toBe(0);
+	await expect
+		.poll(() =>
+			page.evaluate(() => localStorage.getItem("map-travel.render-gpx-height")),
+		)
+		.toBe("false");
+
+	await page.reload();
+	await expect(page.locator("#render-gpx-height")).not.toBeChecked();
+	await page.locator("#render-gpx-height").setChecked(true);
+	await expect
+		.poll(() =>
+			page.evaluate(
+				() =>
+					(window as typeof window & {
+						__mapTravelDebug?: {
+							elevatedTrackExtrusionStats: () => { featureCount: number };
+						};
+					}).__mapTravelDebug?.elevatedTrackExtrusionStats().featureCount ?? 0,
+			),
+		)
+		.toBe(1);
+	await page.getByRole("button", { name: "Back To Map" }).click();
+
 	await page.locator("#map").click({
 		position: {
 			x: 16,

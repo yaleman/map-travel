@@ -5,6 +5,10 @@ import maplibregl, {
 import "maplibre-gl/dist/maplibre-gl.css";
 import { googleMapsViewportUrl } from "./google-maps-link";
 import {
+	readRenderGpxHeight,
+	writeRenderGpxHeight,
+} from "./gpx-height-setting";
+import {
 	missingTilesQueryString,
 	missingTilesSettingsUrl,
 	parseSettingsAreaPrefill,
@@ -283,6 +287,7 @@ let selectedMapObject: SelectedMapObjectState | null = null;
 const hiddenTrackIds = new Set<string>();
 let currentView: ViewMode = getViewFromLocation();
 let workspaceSidebarCollapsed = readWorkspaceSidebarCollapsed();
+let renderGpxHeight = readRenderGpxHeight();
 let settingsRefreshTimer: number | null = null;
 let missingTilesTimer: number | null = null;
 let missingTilesRequestSequence = 0;
@@ -1121,15 +1126,17 @@ function updateWorkspaceSelectionSources(): void {
 }
 
 function updateElevatedTrackExtrusions(): void {
-	elevatedTrackExtrusionData = buildElevatedTrackExtrusionFeatureCollection(
-		elevatedTracksForMap().map((track) => ({
-			id: track.id,
-			geometry: parseTrackGeometry(track),
-			selected:
-				selectedMapObject?.objectType === "track" &&
-				selectedMapObject.id === track.id,
-		})),
-	);
+	elevatedTrackExtrusionData = renderGpxHeight
+		? buildElevatedTrackExtrusionFeatureCollection(
+				elevatedTracksForMap().map((track) => ({
+					id: track.id,
+					geometry: parseTrackGeometry(track),
+					selected:
+						selectedMapObject?.objectType === "track" &&
+						selectedMapObject.id === track.id,
+				})),
+			)
+		: buildElevatedTrackExtrusionFeatureCollection([]);
 	const source = workspaceMap.getSource("elevated-track-extrusions");
 	if (source?.type === "geojson") {
 		source.setData(elevatedTrackExtrusionData);
@@ -1887,15 +1894,21 @@ function renderSettings(): void {
         <button id="world-to-6" type="button" ${settingsState.isBusy || !settingsState.selectedBuildKey ? "disabled" : ""}>World to 6</button>
         <button id="rebuild-stale" class="secondary" type="button" ${settingsState.isBusy || staleCount === 0 ? "disabled" : ""}>Rebuild stale</button>
       </div>
-      <div class="status ${staleCount ? "warn" : ""}">
-        ${
-					settingsState.isBusy
-						? "Working…"
-						: staleCount
-							? `${staleCount} chunks are stale for ${escapeHtml(settingsState.selectedBuildKey || "the selected build")}.`
-							: "Managed PMTiles are current for the selected build."
-				}
-      </div>
+      <label class="toggle">
+        <input id="render-gpx-height" type="checkbox" ${renderGpxHeight ? "checked" : ""} />
+        Render GPX height
+      </label>
+      ${
+				settingsState.isBusy || staleCount
+					? `<div class="status ${staleCount ? "warn" : ""}">
+              ${
+								settingsState.isBusy
+									? "Working…"
+									: `${staleCount} chunks are stale for ${escapeHtml(settingsState.selectedBuildKey || "the selected build")}.`
+							}
+            </div>`
+					: ""
+			}
       <div class="settings-stats">
         <div class="stat-card">
           <strong>${activeJobCount}</strong>
@@ -1974,6 +1987,8 @@ function wireSettingsPanel(): void {
 		settingsContent.querySelector<HTMLButtonElement>("#world-to-6");
 	const rebuildStaleButton =
 		settingsContent.querySelector<HTMLButtonElement>("#rebuild-stale");
+	const renderGpxHeightInput =
+		settingsContent.querySelector<HTMLInputElement>("#render-gpx-height");
 	const selectAreaButton =
 		settingsContent.querySelector<HTMLButtonElement>("#select-area");
 	const clearAreaButton =
@@ -2026,6 +2041,12 @@ function wireSettingsPanel(): void {
 			});
 			await waitForMapJobs();
 		});
+	});
+
+	renderGpxHeightInput?.addEventListener("change", () => {
+		renderGpxHeight = renderGpxHeightInput.checked;
+		writeRenderGpxHeight(renderGpxHeight);
+		updateElevatedTrackExtrusions();
 	});
 
 	selectAreaButton?.addEventListener("click", () => {

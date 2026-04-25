@@ -375,6 +375,7 @@ impl MapsService {
 
     pub async fn list_jobs(&self) -> AppResult<JobListResponse> {
         let jobs = map_job::Entity::find()
+            .filter(map_job::Column::Status.ne("completed"))
             .order_by_desc(map_job::Column::CreatedAt)
             .all(&self.db)
             .await?;
