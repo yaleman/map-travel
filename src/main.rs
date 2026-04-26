@@ -87,9 +87,17 @@ async fn main() -> Result<ExitCode, ExitCode> {
         eprintln!("Failed to build tracing filter: {error}");
         ExitCode::FAILURE
     })?;
+    let include_caller = env_filter
+        .max_level_hint()
+        .is_some_and(|level| level >= LevelFilter::DEBUG);
     tracing_subscriber::registry()
         .with(env_filter)
-        .with(tracing_subscriber::fmt::layer())
+        .with(
+            tracing_subscriber::fmt::layer()
+                .with_target(include_caller)
+                .with_file(include_caller)
+                .with_line_number(include_caller),
+        )
         .init();
 
     let cli = Cli::parse();
