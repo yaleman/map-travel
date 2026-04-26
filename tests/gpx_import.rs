@@ -16,9 +16,11 @@ const SAMPLE_GPX: &str = r#"<?xml version="1.0" encoding="UTF-8"?>
     <name>Mueller Hut Track</name>
     <trkseg>
       <trkpt lat="-43.7219" lon="170.0937">
+        <ele>1250.5</ele>
         <time>2026-02-10T08:00:00Z</time>
       </trkpt>
       <trkpt lat="-43.7201" lon="170.1049">
+        <ele>1325.25</ele>
         <time>2026-02-10T09:30:00Z</time>
       </trkpt>
     </trkseg>
@@ -112,6 +114,21 @@ async fn imports_a_gpx_track_and_makes_it_queryable_on_the_map() {
         import_json["tracks"][0]["original_filename"],
         "mueller-hut.gpx"
     );
+    assert_eq!(
+        serde_json::from_str::<Value>(
+            import_json["tracks"][0]["geometry_json"]
+                .as_str()
+                .expect("geometry json should be a string")
+        )
+        .expect("geometry json should parse"),
+        serde_json::json!({
+            "type": "LineString",
+            "coordinates": [
+                [170.0937, -43.7219, 1250.5],
+                [170.1049, -43.7201, 1325.25]
+            ]
+        })
+    );
 
     let query_response = router
         .oneshot(
@@ -130,6 +147,21 @@ async fn imports_a_gpx_track_and_makes_it_queryable_on_the_map() {
     assert_eq!(tracks.len(), 1);
     assert_eq!(tracks[0]["title"], "Mueller Hut Track");
     assert_eq!(tracks[0]["original_filename"], "mueller-hut.gpx");
+    assert_eq!(
+        serde_json::from_str::<Value>(
+            tracks[0]["geometry_json"]
+                .as_str()
+                .expect("geometry json should be a string")
+        )
+        .expect("geometry json should parse"),
+        serde_json::json!({
+            "type": "LineString",
+            "coordinates": [
+                [170.0937, -43.7219, 1250.5],
+                [170.1049, -43.7201, 1325.25]
+            ]
+        })
+    );
 }
 
 #[tokio::test]
@@ -198,4 +230,8 @@ async fn imports_large_valid_gpx_uploads() {
         import_json["tracks"][0]["original_filename"],
         "big-track.gpx"
     );
+    let geometry_json = import_json["tracks"][0]["geometry_json"]
+        .as_str()
+        .expect("geometry json should be a string");
+    assert!(geometry_json.contains("[170.0937,-43.7219]"));
 }

@@ -9,8 +9,10 @@ It currently supports:
 - importing GPX tracks
 - creating places and collections
 - filtering map objects by bounds, collection, object type, tag, and date range
+- searching places and tracks globally by name and metadata
 - rendering a map-first browser UI built with MapLibre GL JS
 - serving PMTiles-backed basemaps through the Rust server
+- serving OpenAPI documentation and vendored Swagger UI assets
 - vendoring Protomaps basemap style, sprite, and font assets as part of the frontend build
 
 ## Stack
@@ -23,7 +25,7 @@ It currently supports:
 ## Repository Layout
 
 - `src/main.rs`: app entrypoint and static file serving
-- `src/api.rs`: HTTP API routes for collections, places, GPX import, map queries, and basemap endpoints
+- `src/api.rs`: HTTP API routes for collections, places, GPX import, map queries, search, and OpenAPI docs
 - `src/app.rs`: startup, database bootstrap, owner ID generation, and PMTiles reader setup
 - `src/entities.rs`: SeaORM entity definitions
 - `migration/`: SeaORM migration crate
@@ -89,10 +91,14 @@ Building the frontend refreshes that bundle automatically.
 
 ## API Surface
 
+The OpenAPI schema is available at `/api-docs/openapi.json`.
+Swagger UI is available at `/swagger-ui/` and is served from vendored crate assets.
+
 Current routes:
 
 - `GET /api/basemap`
 - `GET /api/basemap/style.json`
+- `GET /api/basemap/tilejson.json`
 - `GET /api/basemap/sprite.json`
 - `GET /api/basemap/sprite.png`
 - `GET /api/basemap/sprite@2x.json`
@@ -102,10 +108,24 @@ Current routes:
 - `GET /api/collections`
 - `POST /api/collections`
 - `POST /api/places`
+- `PATCH /api/places/{place_id}`
+- `DELETE /api/places/{place_id}`
 - `POST /api/tracks/import`
+- `PATCH /api/tracks/{track_id}`
+- `DELETE /api/tracks/{track_id}`
 - `GET /api/map-objects`
+- `GET /api/search`
+- `GET /api/settings/maps/builds`
+- `GET /api/settings/maps/local`
+- `GET /api/settings/maps/jobs`
+- `POST /api/settings/maps/jobs/{job_id}/cancel`
+- `POST /api/settings/maps/world-to-6`
+- `POST /api/settings/maps/area-extract`
+- `POST /api/settings/maps/active-layers`
+- `POST /api/settings/maps/rebuild-chunks`
 
-This is still an early v1 surface. There are no edit/delete routes yet.
+`GET /api/map-objects` is bounds-scoped for the current map viewport.
+`GET /api/search?query=...` searches globally across place names, categories, notes, tags, collection names, and track titles, original filenames, notes, tags, and collection names.
 
 ## Development
 
@@ -133,7 +153,6 @@ The integration tests use in-memory SQLite databases built at runtime.
 
 ## Known Gaps
 
-- no update/delete API yet
 - no photo or attachment handling
 - no collaborative or multi-account model
 - no frontend hot-reload dev server integration with the Rust app yet

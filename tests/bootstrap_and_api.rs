@@ -213,6 +213,7 @@ async fn creates_places_and_filters_them_by_bounds_collection_and_type() {
     );
 
     let filtered_query = router
+        .clone()
         .oneshot(
             Request::builder()
                 .uri(format!(
@@ -236,6 +237,23 @@ async fn creates_places_and_filters_them_by_bounds_collection_and_type() {
             .expect("tracks should be an array")
             .is_empty()
     );
+
+    let wrapped_query = router
+        .oneshot(
+            Request::builder()
+                .uri("/api/map-objects?min_lat=-44.0&min_lon=169.0&max_lat=-43.0&max_lon=-170.0&object_type=place")
+                .body(Body::empty())
+                .expect("wrapped query should build"),
+        )
+        .await
+        .expect("wrapped query should succeed");
+    assert_eq!(wrapped_query.status(), StatusCode::OK);
+    let wrapped_json = json_response(wrapped_query).await;
+    let wrapped_places = wrapped_json["places"]
+        .as_array()
+        .expect("places should be an array");
+    assert_eq!(wrapped_places.len(), 1);
+    assert_eq!(wrapped_places[0]["name"], "Hooker Valley Trailhead");
 }
 
 #[tokio::test]
@@ -275,6 +293,22 @@ async fn updates_selected_place_fields() {
     let created = json_response(create_response).await;
     let place_id = created["id"].as_str().expect("place id").to_owned();
 
+    let get_response = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri(format!("/api/places/{place_id}"))
+                .body(Body::empty())
+                .expect("get request should build"),
+        )
+        .await
+        .expect("get request should succeed");
+    assert_eq!(get_response.status(), StatusCode::OK);
+    let fetched = json_response(get_response).await;
+    assert_eq!(fetched["name"], "Old Name");
+    assert_eq!(fetched["category"], "lookout");
+
     let update_response = router
         .clone()
         .oneshot(
@@ -286,7 +320,9 @@ async fn updates_selected_place_fields() {
                     json!({
                         "name": "New Name",
                         "category": "camp",
-                        "notes": "After update"
+                        "notes": "After update",
+                        "visit_start": "2026-02-11T09:30:00Z",
+                        "visit_end": "2026-02-11T10:45:00Z"
                     })
                     .to_string(),
                 ))
@@ -299,6 +335,8 @@ async fn updates_selected_place_fields() {
     assert_eq!(updated["name"], "New Name");
     assert_eq!(updated["category"], "camp");
     assert_eq!(updated["notes"], "After update");
+    assert_eq!(updated["visit_start"], "2026-02-11T09:30:00Z");
+    assert_eq!(updated["visit_end"], "2026-02-11T10:45:00Z");
 }
 
 #[tokio::test]
@@ -328,6 +366,21 @@ async fn updates_imported_track_fields() {
         imported["tracks"][0]["original_filename"],
         "mueller-hut.gpx"
     );
+
+    let get_response = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri(format!("/api/tracks/{track_id}"))
+                .body(Body::empty())
+                .expect("get request should build"),
+        )
+        .await
+        .expect("get request should succeed");
+    assert_eq!(get_response.status(), StatusCode::OK);
+    let fetched = json_response(get_response).await;
+    assert_eq!(fetched["original_filename"], "mueller-hut.gpx");
 
     let update_response = router
         .clone()
@@ -502,4 +555,215 @@ async fn deletes_tracks_and_removes_them_from_view_queries() {
             .expect("tracks array")
             .is_empty()
     );
+}
+
+#[tokio::test]
+async fn searches_places_and_tracks_globally_by_metadata() {
+    let context = Arc::new(
+        AppContext::bootstrap(AppConfig::for_tests())
+            .await
+            .expect("test bootstrap should succeed"),
+    );
+    let router = build_router(context);
+
+    let collection_response = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/collections")
+                .header("content-type", mime::APPLICATION_JSON.as_ref())
+                .body(Body::from(
+                    json!({
+                        "name": "South Island Walks",
+                        "kind": "trip",
+                        "starts_at": null,
+                        "ends_at": null
+                    })
+                    .to_string(),
+                ))
+                .expect("collection request should build"),
+        )
+        .await
+        .expect("collection request should succeed");
+    let collection = json_response(collection_response).await;
+    let collection_id = collection["id"].as_str().expect("collection id");
+
+    let place_response = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/places")
+                .header("content-type", mime::APPLICATION_JSON.as_ref())
+                .body(Body::from(
+                    json!({
+                        "name": "Hooker Valley Trailhead",
+                        "category": "trailhead",
+                        "notes": "Start of the alpine walk",
+                        "latitude": -43.7346,
+                        "longitude": 170.0963,
+                        "visit_start": null,
+                        "visit_end": null,
+                        "collection_ids": [collection_id],
+                        "tag_names": ["future"]
+                    })
+                    .to_string(),
+                ))
+                .expect("place request should build"),
+        )
+        .await
+        .expect("place request should succeed");
+    assert_eq!(place_response.status(), StatusCode::CREATED);
+
+    let import_response = router
+        .clone()
+        .oneshot(multipart_request(
+            "mueller-hut.gpx",
+            "application/gpx+xml",
+            SAMPLE_GPX,
+        ))
+        .await
+        .expect("import request should succeed");
+    let imported = json_response(import_response).await;
+    let track_id = imported["tracks"][0]["id"]
+        .as_str()
+        .expect("track id")
+        .to_owned();
+    let update_response = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("PATCH")
+                .uri(format!("/api/tracks/{track_id}"))
+                .header("content-type", mime::APPLICATION_JSON.as_ref())
+                .body(Body::from(
+                    json!({
+                        "title": "Mueller Hut Route",
+                        "notes": "ridge ascent"
+                    })
+                    .to_string(),
+                ))
+                .expect("track update request should build"),
+        )
+        .await
+        .expect("track update request should succeed");
+    assert_eq!(update_response.status(), StatusCode::OK);
+
+    let out_of_view_response = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/api/map-objects?min_lat=-28.0&min_lon=152.0&max_lat=-27.0&max_lon=154.0")
+                .body(Body::empty())
+                .expect("map objects request should build"),
+        )
+        .await
+        .expect("map objects request should succeed");
+    let out_of_view = json_response(out_of_view_response).await;
+    assert!(
+        out_of_view["places"]
+            .as_array()
+            .expect("places should be an array")
+            .is_empty()
+    );
+    assert!(
+        out_of_view["tracks"]
+            .as_array()
+            .expect("tracks should be an array")
+            .is_empty()
+    );
+
+    let metadata_search = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/api/search?query=future")
+                .body(Body::empty())
+                .expect("search request should build"),
+        )
+        .await
+        .expect("search request should succeed");
+    assert_eq!(metadata_search.status(), StatusCode::OK);
+    let metadata_json = json_response(metadata_search).await;
+    assert_eq!(
+        metadata_json["places"][0]["name"],
+        "Hooker Valley Trailhead"
+    );
+
+    let track_search = router
+        .oneshot(
+            Request::builder()
+                .uri("/api/search?query=mueller")
+                .body(Body::empty())
+                .expect("search request should build"),
+        )
+        .await
+        .expect("search request should succeed");
+    assert_eq!(track_search.status(), StatusCode::OK);
+    let track_json = json_response(track_search).await;
+    assert_eq!(track_json["tracks"][0]["title"], "Mueller Hut Route");
+}
+
+#[tokio::test]
+async fn rejects_empty_global_searches() {
+    let context = Arc::new(
+        AppContext::bootstrap(AppConfig::for_tests())
+            .await
+            .expect("test bootstrap should succeed"),
+    );
+    let router = build_router(context);
+
+    let response = router
+        .oneshot(
+            Request::builder()
+                .uri("/api/search?query=%20%20")
+                .body(Body::empty())
+                .expect("search request should build"),
+        )
+        .await
+        .expect("search request should succeed");
+
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+async fn serves_openapi_schema_and_swagger_ui() {
+    let context = Arc::new(
+        AppContext::bootstrap(AppConfig::for_tests())
+            .await
+            .expect("test bootstrap should succeed"),
+    );
+    let router = build_router(context);
+
+    let schema_response = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/api-docs/openapi.json")
+                .body(Body::empty())
+                .expect("openapi request should build"),
+        )
+        .await
+        .expect("openapi request should succeed");
+    assert_eq!(schema_response.status(), StatusCode::OK);
+    let schema = json_response(schema_response).await;
+    let paths = schema["paths"]
+        .as_object()
+        .expect("paths should be an object");
+    assert!(paths.contains_key("/api/search"));
+    assert!(paths.contains_key("/api/map-objects"));
+    assert!(paths.contains_key("/api/tracks/import"));
+
+    let swagger_response = router
+        .oneshot(
+            Request::builder()
+                .uri("/swagger-ui/")
+                .body(Body::empty())
+                .expect("swagger request should build"),
+        )
+        .await
+        .expect("swagger request should succeed");
+
+    assert_eq!(swagger_response.status(), StatusCode::OK);
 }

@@ -15,6 +15,6 @@ export default defineConfig({
 		command: "../scripts/run-playwright-server.sh",
 		url: "http://127.0.0.1:9010",
 		reuseExistingServer: false,
-		timeout: 120_000,
+		timeout: 30_000,
 	},
 });

@@ -146,18 +146,42 @@
 
         <main class="panel map-panel">
           <div id="map"></div>
-          <a
-            id="open-google-maps"
-            class="map-corner-chip"
-            href="https://www.google.com/maps"
-            target="_blank"
-            rel="noreferrer"
-          >
-            G
-          </a>
+          <div class="map-corner-actions">
+            <a
+              id="missing-map-tiles"
+              class="map-corner-chip map-warning-chip"
+              href="/settings"
+              target="_blank"
+              rel="noreferrer"
+              aria-label="Local map tiles are missing"
+              title="Local map tiles are missing"
+              hidden
+            >
+              !
+            </a>
+            <a
+              id="open-google-maps"
+              class="map-corner-chip"
+              href="https://www.google.com/maps"
+              target="_blank"
+              rel="noreferrer"
+            >
+              G
+            </a>
+          </div>
         </main>
 
-        <aside class="panel">
+        <aside class="panel detail-sidebar">
+          <form id="right-panel-search-form" class="right-panel-search" role="search">
+            <label for="right-panel-search" class="visually-hidden">Search map objects</label>
+            <input
+              id="right-panel-search"
+              type="search"
+              placeholder="Search"
+              autocomplete="off"
+              enterkeyhint="search"
+            />
+          </form>
           <div id="detail-panel" class="panel-scroll">
             <div class="drawer-empty">
               Select a track or place on the map, or switch to place mode and click on the map to

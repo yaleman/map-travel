@@ -5,7 +5,7 @@ use axum::{
     Json, Router,
     extract::{DefaultBodyLimit, Multipart, Path, Query, State},
     http::StatusCode,
-    routing::{get, patch, post},
+    routing::{get, post},
 };
 use chrono::{DateTime, Utc};
 use geojson::Geometry;
@@ -14,16 +14,22 @@ use sea_orm::{
     QuerySelect, QueryTrait, TransactionTrait,
 };
 use serde::{Deserialize, Serialize};
+use utoipa::{IntoParams, OpenApi, ToSchema};
+use utoipa_swagger_ui::SwaggerUi;
 use uuid::Uuid;
 
 use crate::{
     app::AppContext,
     entities::{collection, membership, object_tag, place, tag, track},
-    error::{AppError, AppResult},
+    error::{AppError, AppResult, ErrorBody},
+    maps::{
+        ActiveLayerUpdate, ArchiveRecord, AreaExtractSpec, BuildCatalogResponse, BuildRecord,
+        ChunkRecord, EnqueuedJobResponse, JobListResponse, JobRecord, LocalMapsResponse,
+        RebuildChunksResponse,
+    },
 };
 
 const MAX_GPX_UPLOAD_BYTES: usize = 64 * 1024 * 1024;
-
 pub fn build_router(context: Arc<AppContext>) -> Router {
     Router::new()
         .route("/api/collections", post(create_collection))
@@ -31,7 +37,7 @@ pub fn build_router(context: Arc<AppContext>) -> Router {
         .route("/api/places", post(create_place))
         .route(
             "/api/places/{place_id}",
-            patch(update_place).delete(delete_place),
+            get(get_place).patch(update_place).delete(delete_place),
         )
         .route(
             "/api/tracks/import",
@@ -39,14 +45,85 @@ pub fn build_router(context: Arc<AppContext>) -> Router {
         )
         .route(
             "/api/tracks/{track_id}",
-            patch(update_track).delete(delete_track),
+            get(get_track).patch(update_track).delete(delete_track),
         )
         .route("/api/map-objects", get(list_map_objects))
+        .route("/api/search", get(search_map_objects))
         .merge(crate::maps_api::build_router())
+        .merge(SwaggerUi::new("/swagger-ui").url("/api-docs/openapi.json", ApiDoc::openapi()))
         .with_state(context)
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(OpenApi)]
+#[openapi(
+    paths(
+        create_collection,
+        list_collections,
+        create_place,
+        get_place,
+        update_place,
+        delete_place,
+        import_tracks,
+        list_map_objects,
+        search_map_objects,
+        get_track,
+        update_track,
+        delete_track,
+        crate::maps_api::get_builds,
+        crate::maps_api::get_local_maps,
+        crate::maps_api::get_jobs,
+        crate::maps_api::post_cancel_job,
+        crate::maps_api::post_world_to_6,
+        crate::maps_api::post_area_extract,
+        crate::maps_api::post_active_layers,
+        crate::maps_api::post_rebuild_chunks,
+        crate::maps_api::get_basemap_config,
+        crate::maps_api::get_basemap_style,
+        crate::maps_api::get_basemap_tilejson,
+        crate::maps_api::get_basemap_font,
+        crate::maps_api::get_basemap_sprite_json,
+        crate::maps_api::get_basemap_sprite_png,
+        crate::maps_api::get_basemap_sprite_json_hidpi,
+        crate::maps_api::get_basemap_sprite_png_hidpi,
+        crate::maps_api::get_missing_basemap_tiles,
+        crate::maps_api::get_basemap_tile
+    ),
+    components(schemas(
+        ActiveLayerUpdate,
+        AreaExtractSpec,
+        ArchiveRecord,
+        BuildCatalogResponse,
+        BuildRecord,
+        ChunkRecord,
+        CollectionResponse,
+        CreateCollectionRequest,
+        CreatePlaceRequest,
+        EnqueuedJobResponse,
+        ErrorBody,
+        ImportTracksResponse,
+        JobListResponse,
+        JobRecord,
+        LocalMapsResponse,
+        MapObjectsQuery,
+        MapObjectsResponse,
+        PlaceResponse,
+        RebuildChunksResponse,
+        SearchQuery,
+        TrackResponse,
+        UpdatePlaceRequest,
+        UpdateTrackRequest,
+        crate::maps_api::ActiveLayersRequest,
+        crate::maps_api::AreaExtractRequest,
+        crate::maps_api::BasemapConfigResponse,
+        crate::maps_api::MissingTilesResponse,
+        crate::maps_api::RebuildChunksRequest,
+        crate::maps_api::WorldTo6Request
+    )),
+    tags((name = "map-travel", description = "Map Travel API"))
+)]
+struct ApiDoc;
+
+#[derive(Debug, Deserialize, ToSchema)]
 struct CreateCollectionRequest {
     name: String,
     kind: String,
@@ -54,7 +131,7 @@ struct CreateCollectionRequest {
     ends_at: Option<DateTime<Utc>>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, ToSchema)]
 struct CollectionResponse {
     id: String,
     name: String,
@@ -64,6 +141,16 @@ struct CollectionResponse {
     is_public: bool,
 }
 
+#[utoipa::path(
+    post,
+    path = "/api/collections",
+    request_body = CreateCollectionRequest,
+    responses(
+        (status = 201, description = "Collection created", body = CollectionResponse),
+        (status = 400, description = "Invalid request", body = ErrorBody),
+        (status = 500, description = "Internal error", body = ErrorBody)
+    )
+)]
 async fn create_collection(
     State(context): State<Arc<AppContext>>,
     Json(request): Json<CreateCollectionRequest>,
@@ -98,6 +185,14 @@ async fn create_collection(
     ))
 }
 
+#[utoipa::path(
+    get,
+    path = "/api/collections",
+    responses(
+        (status = 200, description = "Collections", body = [CollectionResponse]),
+        (status = 500, description = "Internal error", body = ErrorBody)
+    )
+)]
 async fn list_collections(
     State(context): State<Arc<AppContext>>,
 ) -> AppResult<Json<Vec<CollectionResponse>>> {
@@ -118,7 +213,7 @@ async fn list_collections(
     Ok(Json(collections))
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, ToSchema)]
 struct CreatePlaceRequest {
     name: String,
     category: Option<String>,
@@ -131,7 +226,7 @@ struct CreatePlaceRequest {
     tag_names: Vec<String>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, ToSchema)]
 struct PlaceResponse {
     id: String,
     name: String,
@@ -144,13 +239,25 @@ struct PlaceResponse {
     is_public: bool,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, ToSchema)]
 struct UpdatePlaceRequest {
     name: String,
     category: Option<String>,
     notes: Option<String>,
+    visit_start: Option<DateTime<Utc>>,
+    visit_end: Option<DateTime<Utc>>,
 }
 
+#[utoipa::path(
+    post,
+    path = "/api/places",
+    request_body = CreatePlaceRequest,
+    responses(
+        (status = 201, description = "Place created", body = PlaceResponse),
+        (status = 400, description = "Invalid request", body = ErrorBody),
+        (status = 500, description = "Internal error", body = ErrorBody)
+    )
+)]
 async fn create_place(
     State(context): State<Arc<AppContext>>,
     Json(request): Json<CreatePlaceRequest>,
@@ -235,6 +342,49 @@ async fn create_place(
     ))
 }
 
+#[utoipa::path(
+    get,
+    path = "/api/places/{place_id}",
+    params(("place_id" = String, Path, description = "Place ID")),
+    responses(
+        (status = 200, description = "Place found", body = PlaceResponse),
+        (status = 400, description = "Invalid request", body = ErrorBody),
+        (status = 500, description = "Internal error", body = ErrorBody)
+    )
+)]
+async fn get_place(
+    State(context): State<Arc<AppContext>>,
+    Path(place_id): Path<String>,
+) -> AppResult<Json<PlaceResponse>> {
+    let model = place::Entity::find_by_id(place_id)
+        .one(context.db())
+        .await?
+        .ok_or_else(|| AppError::InvalidRequest("place does not exist".to_owned()))?;
+
+    Ok(Json(PlaceResponse {
+        id: model.id,
+        name: model.name,
+        category: model.category,
+        notes: model.notes,
+        latitude: model.latitude,
+        longitude: model.longitude,
+        visit_start: model.visit_start,
+        visit_end: model.visit_end,
+        is_public: model.is_public,
+    }))
+}
+
+#[utoipa::path(
+    patch,
+    path = "/api/places/{place_id}",
+    params(("place_id" = String, Path, description = "Place ID")),
+    request_body = UpdatePlaceRequest,
+    responses(
+        (status = 200, description = "Place updated", body = PlaceResponse),
+        (status = 400, description = "Invalid request", body = ErrorBody),
+        (status = 500, description = "Internal error", body = ErrorBody)
+    )
+)]
 async fn update_place(
     State(context): State<Arc<AppContext>>,
     Path(place_id): Path<String>,
@@ -258,6 +408,8 @@ async fn update_place(
         .category
         .and_then(|value| trim_optional_string(&value)));
     model.notes = Set(request.notes.and_then(|value| trim_optional_string(&value)));
+    model.visit_start = Set(request.visit_start);
+    model.visit_end = Set(request.visit_end);
     model.updated_at = Set(now);
     let updated = model.update(context.db()).await?;
 
@@ -274,6 +426,16 @@ async fn update_place(
     }))
 }
 
+#[utoipa::path(
+    delete,
+    path = "/api/places/{place_id}",
+    params(("place_id" = String, Path, description = "Place ID")),
+    responses(
+        (status = 204, description = "Place deleted"),
+        (status = 400, description = "Invalid request", body = ErrorBody),
+        (status = 500, description = "Internal error", body = ErrorBody)
+    )
+)]
 async fn delete_place(
     State(context): State<Arc<AppContext>>,
     Path(place_id): Path<String>,
@@ -294,11 +456,21 @@ async fn delete_place(
     Ok(StatusCode::NO_CONTENT)
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, ToSchema)]
 struct ImportTracksResponse {
     tracks: Vec<TrackResponse>,
 }
 
+#[utoipa::path(
+    post,
+    path = "/api/tracks/import",
+    request_body(content = String, content_type = "multipart/form-data"),
+    responses(
+        (status = 201, description = "Tracks imported", body = ImportTracksResponse),
+        (status = 400, description = "Invalid upload", body = ErrorBody),
+        (status = 500, description = "Internal error", body = ErrorBody)
+    )
+)]
 async fn import_tracks(
     State(context): State<Arc<AppContext>>,
     mut multipart: Multipart,
@@ -369,20 +541,7 @@ async fn import_tracks(
         .insert(context.db())
         .await?;
 
-        imported.push(TrackResponse {
-            id: created.id,
-            title: created.title,
-            original_filename: created.original_filename,
-            notes: created.notes,
-            geometry_json: created.geometry_json,
-            min_lat: created.min_lat,
-            min_lon: created.min_lon,
-            max_lat: created.max_lat,
-            max_lon: created.max_lon,
-            distance_m: created.distance_m,
-            start_time: created.start_time,
-            end_time: created.end_time,
-        });
+        imported.push(TrackResponse::from_model(created));
     }
 
     Ok((
@@ -391,7 +550,7 @@ async fn import_tracks(
     ))
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, IntoParams, ToSchema)]
 struct MapObjectsQuery {
     min_lat: f64,
     min_lon: f64,
@@ -404,13 +563,18 @@ struct MapObjectsQuery {
     ends_before: Option<DateTime<Utc>>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Deserialize, IntoParams, ToSchema)]
+struct SearchQuery {
+    query: String,
+}
+
+#[derive(Debug, Serialize, ToSchema)]
 struct MapObjectsResponse {
     tracks: Vec<TrackResponse>,
     places: Vec<PlaceResponse>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, ToSchema)]
 struct TrackResponse {
     id: String,
     title: Option<String>,
@@ -426,12 +590,41 @@ struct TrackResponse {
     end_time: Option<DateTime<Utc>>,
 }
 
-#[derive(Debug, Deserialize)]
+impl TrackResponse {
+    fn from_model(model: track::Model) -> Self {
+        Self {
+            id: model.id,
+            title: model.title,
+            original_filename: model.original_filename,
+            notes: model.notes,
+            geometry_json: model.geometry_json,
+            min_lat: model.min_lat,
+            min_lon: model.min_lon,
+            max_lat: model.max_lat,
+            max_lon: model.max_lon,
+            distance_m: model.distance_m,
+            start_time: model.start_time,
+            end_time: model.end_time,
+        }
+    }
+}
+
+#[derive(Debug, Deserialize, ToSchema)]
 struct UpdateTrackRequest {
     title: Option<String>,
     notes: Option<String>,
 }
 
+#[utoipa::path(
+    get,
+    path = "/api/map-objects",
+    params(MapObjectsQuery),
+    responses(
+        (status = 200, description = "Map objects in bounds", body = MapObjectsResponse),
+        (status = 400, description = "Invalid query", body = ErrorBody),
+        (status = 500, description = "Internal error", body = ErrorBody)
+    )
+)]
 async fn list_map_objects(
     State(context): State<Arc<AppContext>>,
     Query(query): Query<MapObjectsQuery>,
@@ -469,26 +662,96 @@ async fn list_map_objects(
             .all(context.db())
             .await?
             .into_iter()
-            .map(|model| TrackResponse {
-                id: model.id,
-                title: model.title,
-                original_filename: model.original_filename,
-                notes: model.notes,
-                geometry_json: model.geometry_json,
-                min_lat: model.min_lat,
-                min_lon: model.min_lon,
-                max_lat: model.max_lat,
-                max_lon: model.max_lon,
-                distance_m: model.distance_m,
-                start_time: model.start_time,
-                end_time: model.end_time,
-            })
+            .map(TrackResponse::from_model)
             .collect()
     };
 
     Ok(Json(MapObjectsResponse { tracks, places }))
 }
 
+#[utoipa::path(
+    get,
+    path = "/api/search",
+    params(SearchQuery),
+    responses(
+        (status = 200, description = "Global search results", body = MapObjectsResponse),
+        (status = 400, description = "Invalid query", body = ErrorBody),
+        (status = 500, description = "Internal error", body = ErrorBody)
+    )
+)]
+async fn search_map_objects(
+    State(context): State<Arc<AppContext>>,
+    Query(query): Query<SearchQuery>,
+) -> AppResult<Json<MapObjectsResponse>> {
+    let search = query.query.trim();
+    if search.is_empty() {
+        return Err(AppError::InvalidRequest(
+            "search query must not be empty".to_owned(),
+        ));
+    }
+
+    let places = place::Entity::find()
+        .filter(search_place_condition(search))
+        .all(context.db())
+        .await?
+        .into_iter()
+        .map(|model| PlaceResponse {
+            id: model.id,
+            name: model.name,
+            category: model.category,
+            notes: model.notes,
+            latitude: model.latitude,
+            longitude: model.longitude,
+            visit_start: model.visit_start,
+            visit_end: model.visit_end,
+            is_public: model.is_public,
+        })
+        .collect();
+
+    let tracks = track::Entity::find()
+        .filter(search_track_condition(search))
+        .all(context.db())
+        .await?
+        .into_iter()
+        .map(TrackResponse::from_model)
+        .collect();
+
+    Ok(Json(MapObjectsResponse { tracks, places }))
+}
+
+#[utoipa::path(
+    get,
+    path = "/api/tracks/{track_id}",
+    params(("track_id" = String, Path, description = "Track ID")),
+    responses(
+        (status = 200, description = "Track found", body = TrackResponse),
+        (status = 400, description = "Invalid request", body = ErrorBody),
+        (status = 500, description = "Internal error", body = ErrorBody)
+    )
+)]
+async fn get_track(
+    State(context): State<Arc<AppContext>>,
+    Path(track_id): Path<String>,
+) -> AppResult<Json<TrackResponse>> {
+    let model = track::Entity::find_by_id(track_id)
+        .one(context.db())
+        .await?
+        .ok_or_else(|| AppError::InvalidRequest("track does not exist".to_owned()))?;
+
+    Ok(Json(TrackResponse::from_model(model)))
+}
+
+#[utoipa::path(
+    patch,
+    path = "/api/tracks/{track_id}",
+    params(("track_id" = String, Path, description = "Track ID")),
+    request_body = UpdateTrackRequest,
+    responses(
+        (status = 200, description = "Track updated", body = TrackResponse),
+        (status = 400, description = "Invalid request", body = ErrorBody),
+        (status = 500, description = "Internal error", body = ErrorBody)
+    )
+)]
 async fn update_track(
     State(context): State<Arc<AppContext>>,
     Path(track_id): Path<String>,
@@ -506,22 +769,19 @@ async fn update_track(
     model.updated_at = Set(now);
     let updated = model.update(context.db()).await?;
 
-    Ok(Json(TrackResponse {
-        id: updated.id,
-        title: updated.title,
-        original_filename: updated.original_filename,
-        notes: updated.notes,
-        geometry_json: updated.geometry_json,
-        min_lat: updated.min_lat,
-        min_lon: updated.min_lon,
-        max_lat: updated.max_lat,
-        max_lon: updated.max_lon,
-        distance_m: updated.distance_m,
-        start_time: updated.start_time,
-        end_time: updated.end_time,
-    }))
+    Ok(Json(TrackResponse::from_model(updated)))
 }
 
+#[utoipa::path(
+    delete,
+    path = "/api/tracks/{track_id}",
+    params(("track_id" = String, Path, description = "Track ID")),
+    responses(
+        (status = 204, description = "Track deleted"),
+        (status = 400, description = "Invalid request", body = ErrorBody),
+        (status = 500, description = "Internal error", body = ErrorBody)
+    )
+)]
 async fn delete_track(
     State(context): State<Arc<AppContext>>,
     Path(track_id): Path<String>,
@@ -572,6 +832,92 @@ where
     Ok(())
 }
 
+fn search_place_condition(search: &str) -> Condition {
+    Condition::any()
+        .add(place::Column::Name.contains(search))
+        .add(place::Column::Category.contains(search))
+        .add(place::Column::Notes.contains(search))
+        .add(
+            place::Column::Id.in_subquery(
+                object_tag::Entity::find()
+                    .select_only()
+                    .column(object_tag::Column::ObjectId)
+                    .filter(object_tag::Column::ObjectType.eq("place"))
+                    .filter(
+                        object_tag::Column::TagId.in_subquery(
+                            tag::Entity::find()
+                                .select_only()
+                                .column(tag::Column::Id)
+                                .filter(tag::Column::Name.contains(search))
+                                .into_query(),
+                        ),
+                    )
+                    .into_query(),
+            ),
+        )
+        .add(
+            place::Column::Id.in_subquery(
+                membership::Entity::find()
+                    .select_only()
+                    .column(membership::Column::ObjectId)
+                    .filter(membership::Column::ObjectType.eq("place"))
+                    .filter(
+                        membership::Column::CollectionId.in_subquery(
+                            collection::Entity::find()
+                                .select_only()
+                                .column(collection::Column::Id)
+                                .filter(collection::Column::Name.contains(search))
+                                .into_query(),
+                        ),
+                    )
+                    .into_query(),
+            ),
+        )
+}
+
+fn search_track_condition(search: &str) -> Condition {
+    Condition::any()
+        .add(track::Column::Title.contains(search))
+        .add(track::Column::OriginalFilename.contains(search))
+        .add(track::Column::Notes.contains(search))
+        .add(
+            track::Column::Id.in_subquery(
+                object_tag::Entity::find()
+                    .select_only()
+                    .column(object_tag::Column::ObjectId)
+                    .filter(object_tag::Column::ObjectType.eq("track"))
+                    .filter(
+                        object_tag::Column::TagId.in_subquery(
+                            tag::Entity::find()
+                                .select_only()
+                                .column(tag::Column::Id)
+                                .filter(tag::Column::Name.contains(search))
+                                .into_query(),
+                        ),
+                    )
+                    .into_query(),
+            ),
+        )
+        .add(
+            track::Column::Id.in_subquery(
+                membership::Entity::find()
+                    .select_only()
+                    .column(membership::Column::ObjectId)
+                    .filter(membership::Column::ObjectType.eq("track"))
+                    .filter(
+                        membership::Column::CollectionId.in_subquery(
+                            collection::Entity::find()
+                                .select_only()
+                                .column(collection::Column::Id)
+                                .filter(collection::Column::Name.contains(search))
+                                .into_query(),
+                        ),
+                    )
+                    .into_query(),
+            ),
+        )
+}
+
 fn place_condition(query: &MapObjectsQuery) -> AppResult<Condition> {
     if let Some(object_type) = query.object_type.as_deref()
         && object_type != "place"
@@ -585,8 +931,7 @@ fn place_condition(query: &MapObjectsQuery) -> AppResult<Condition> {
     let mut condition = Condition::all()
         .add(place::Column::Latitude.gte(query.min_lat))
         .add(place::Column::Latitude.lte(query.max_lat))
-        .add(place::Column::Longitude.gte(query.min_lon))
-        .add(place::Column::Longitude.lte(query.max_lon));
+        .add(place_longitude_condition(query));
 
     if let Some(collection_id) = &query.collection_id {
         condition = condition.add(
@@ -633,12 +978,23 @@ fn place_condition(query: &MapObjectsQuery) -> AppResult<Condition> {
     Ok(condition)
 }
 
+fn place_longitude_condition(query: &MapObjectsQuery) -> Condition {
+    if query.min_lon <= query.max_lon {
+        return Condition::all()
+            .add(place::Column::Longitude.gte(query.min_lon))
+            .add(place::Column::Longitude.lte(query.max_lon));
+    }
+
+    Condition::any()
+        .add(place::Column::Longitude.gte(query.min_lon))
+        .add(place::Column::Longitude.lte(query.max_lon))
+}
+
 fn track_condition(query: &MapObjectsQuery) -> AppResult<Condition> {
     let mut condition = Condition::all()
         .add(track::Column::MinLat.lte(query.max_lat))
         .add(track::Column::MaxLat.gte(query.min_lat))
-        .add(track::Column::MinLon.lte(query.max_lon))
-        .add(track::Column::MaxLon.gte(query.min_lon));
+        .add(track_longitude_condition(query));
 
     if let Some(collection_id) = &query.collection_id {
         condition = condition.add(
@@ -685,6 +1041,18 @@ fn track_condition(query: &MapObjectsQuery) -> AppResult<Condition> {
     Ok(condition)
 }
 
+fn track_longitude_condition(query: &MapObjectsQuery) -> Condition {
+    if query.min_lon <= query.max_lon {
+        return Condition::all()
+            .add(track::Column::MinLon.lte(query.max_lon))
+            .add(track::Column::MaxLon.gte(query.min_lon));
+    }
+
+    Condition::any()
+        .add(track::Column::MaxLon.gte(query.min_lon))
+        .add(track::Column::MinLon.lte(query.max_lon))
+}
+
 fn validate_collection_kind(kind: &str) -> AppResult<()> {
     match kind {
         "trip" | "future" | "past" | "general" => Ok(()),
@@ -723,7 +1091,11 @@ fn summarize_gpx_track(parsed_track: &gpx::Track) -> AppResult<TrackImportSummar
             let point = waypoint.point();
             let lon = point.x();
             let lat = point.y();
-            segment_coords.push(vec![lon, lat]);
+            let mut coordinate = vec![lon, lat];
+            if let Some(elevation) = waypoint.elevation {
+                coordinate.push(elevation);
+            }
+            segment_coords.push(coordinate);
             min_lat = min_lat.min(lat);
             min_lon = min_lon.min(lon);
             max_lat = max_lat.max(lat);

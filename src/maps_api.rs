@@ -2,17 +2,25 @@ use std::sync::Arc;
 
 use axum::{
     Json, Router,
-    extract::{Path, State},
+    extract::{Path, Query, State},
     http::{HeaderMap, StatusCode},
     routing::{get, post},
 };
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
+use utoipa::{IntoParams, ToSchema};
 
 use crate::{
     app::AppContext,
-    error::{AppError, AppResult},
-    maps::{ActiveLayerUpdate, AreaExtractSpec, ManagedBasemapSummary},
+    error::{AppError, AppResult, ErrorBody},
+    maps::{
+        ActiveLayerUpdate, AreaExtractSpec, BuildCatalogResponse, EnqueuedJobResponse,
+        JobListResponse, LocalMapsResponse, ManagedBasemapSummary, RebuildChunksResponse,
+        tile_bounds_for_coord, tile_range_for_bbox, validate_bbox,
+    },
 };
+
+const MAX_MISSING_TILE_ZOOM: u8 = 12;
+const MAX_MISSING_TILE_SCAN: u32 = 4096;
 
 pub fn build_router() -> Router<Arc<AppContext>> {
     Router::new()
@@ -44,35 +52,36 @@ pub fn build_router() -> Router<Arc<AppContext>> {
             get(get_basemap_sprite_png_hidpi),
         )
         .route("/api/basemap/tilejson.json", get(get_basemap_tilejson))
+        .route("/api/basemap/missing-tiles", get(get_missing_basemap_tiles))
         .route("/api/basemap/tiles/{z}/{x}/{y}", get(get_basemap_tile))
 }
 
-#[derive(Debug, Deserialize)]
-struct WorldTo6Request {
+#[derive(Debug, Deserialize, ToSchema)]
+pub(crate) struct WorldTo6Request {
     build_key: String,
 }
 
-#[derive(Debug, Deserialize)]
-struct AreaExtractRequest {
+#[derive(Debug, Deserialize, ToSchema)]
+pub(crate) struct AreaExtractRequest {
     build_key: String,
     #[serde(flatten)]
     extract: AreaExtractSpec,
 }
 
-#[derive(Debug, Deserialize)]
-struct ActiveLayersRequest {
+#[derive(Debug, Deserialize, ToSchema)]
+pub(crate) struct ActiveLayersRequest {
     selected_build_key: String,
     layers: Vec<ActiveLayerUpdate>,
 }
 
-#[derive(Debug, Deserialize)]
-struct RebuildChunksRequest {
+#[derive(Debug, Deserialize, ToSchema)]
+pub(crate) struct RebuildChunksRequest {
     build_key: String,
     chunk_ids: Option<Vec<String>>,
 }
 
-#[derive(Debug, serde::Serialize)]
-struct BasemapConfigResponse {
+#[derive(Debug, serde::Serialize, ToSchema)]
+pub(crate) struct BasemapConfigResponse {
     enabled: bool,
     style_url: Option<String>,
     tile_type: Option<String>,
@@ -82,30 +91,78 @@ struct BasemapConfigResponse {
     message: Option<String>,
 }
 
-async fn get_builds(State(context): State<Arc<AppContext>>) -> AppResult<Json<serde_json::Value>> {
-    let payload = context.maps().fetch_build_catalog().await?;
-    serde_json::to_value(payload)
-        .map(Json)
-        .map_err(|error| AppError::Internal(format!("could not serialize build catalog: {error}")))
+#[derive(Debug, Deserialize, IntoParams)]
+pub(crate) struct MissingTilesQuery {
+    min_lon: f64,
+    min_lat: f64,
+    max_lon: f64,
+    max_lat: f64,
+    tile_zoom: u8,
 }
 
-async fn get_local_maps(
+#[derive(Debug, Serialize, ToSchema)]
+pub(crate) struct MissingTilesResponse {
+    missing: bool,
+    tile_zoom: u8,
+    missing_tile_count: u32,
+    bounds: Option<[f64; 4]>,
+    max_zoom: Option<u8>,
+}
+
+#[utoipa::path(
+    get,
+    path = "/api/settings/maps/builds",
+    responses(
+        (status = 200, description = "Available Protomaps builds", body = BuildCatalogResponse),
+        (status = 500, description = "Internal error", body = ErrorBody)
+    )
+)]
+pub(crate) async fn get_builds(
     State(context): State<Arc<AppContext>>,
-) -> AppResult<Json<serde_json::Value>> {
-    let payload = context.maps().list_local_maps().await?;
-    serde_json::to_value(payload)
-        .map(Json)
-        .map_err(|error| AppError::Internal(format!("could not serialize local maps: {error}")))
+) -> AppResult<Json<BuildCatalogResponse>> {
+    context.maps().fetch_build_catalog().await.map(Json)
 }
 
-async fn get_jobs(State(context): State<Arc<AppContext>>) -> AppResult<Json<serde_json::Value>> {
-    let payload = context.maps().list_jobs().await?;
-    serde_json::to_value(payload)
-        .map(Json)
-        .map_err(|error| AppError::Internal(format!("could not serialize map jobs: {error}")))
+#[utoipa::path(
+    get,
+    path = "/api/settings/maps/local",
+    responses(
+        (status = 200, description = "Local managed maps", body = LocalMapsResponse),
+        (status = 500, description = "Internal error", body = ErrorBody)
+    )
+)]
+pub(crate) async fn get_local_maps(
+    State(context): State<Arc<AppContext>>,
+) -> AppResult<Json<LocalMapsResponse>> {
+    context.maps().list_local_maps().await.map(Json)
 }
 
-async fn post_cancel_job(
+#[utoipa::path(
+    get,
+    path = "/api/settings/maps/jobs",
+    responses(
+        (status = 200, description = "Managed map jobs", body = JobListResponse),
+        (status = 500, description = "Internal error", body = ErrorBody)
+    )
+)]
+pub(crate) async fn get_jobs(
+    State(context): State<Arc<AppContext>>,
+) -> AppResult<Json<JobListResponse>> {
+    context.maps().list_jobs().await.map(Json)
+}
+
+#[utoipa::path(
+    post,
+    path = "/api/settings/maps/jobs/{job_id}/cancel",
+    params(("job_id" = String, Path, description = "Job ID")),
+    responses(
+        (status = 200, description = "Job cancellation requested"),
+        (status = 400, description = "Invalid request", body = ErrorBody),
+        (status = 409, description = "Conflict", body = ErrorBody),
+        (status = 500, description = "Internal error", body = ErrorBody)
+    )
+)]
+pub(crate) async fn post_cancel_job(
     State(context): State<Arc<AppContext>>,
     Path(job_id): Path<String>,
 ) -> AppResult<StatusCode> {
@@ -113,34 +170,58 @@ async fn post_cancel_job(
     Ok(StatusCode::OK)
 }
 
-async fn post_world_to_6(
+#[utoipa::path(
+    post,
+    path = "/api/settings/maps/world-to-6",
+    request_body = WorldTo6Request,
+    responses(
+        (status = 201, description = "World-to-6 job queued", body = EnqueuedJobResponse),
+        (status = 400, description = "Invalid request", body = ErrorBody),
+        (status = 409, description = "Conflict", body = ErrorBody),
+        (status = 500, description = "Internal error", body = ErrorBody)
+    )
+)]
+pub(crate) async fn post_world_to_6(
     State(context): State<Arc<AppContext>>,
     Json(request): Json<WorldTo6Request>,
-) -> AppResult<(StatusCode, Json<serde_json::Value>)> {
+) -> AppResult<(StatusCode, Json<EnqueuedJobResponse>)> {
     let payload = context.maps().queue_world_to_6(&request.build_key).await?;
-    let json = serde_json::to_value(payload).map_err(|error| {
-        AppError::Internal(format!("could not serialize world-to-6 response: {error}"))
-    })?;
-    Ok((StatusCode::CREATED, Json(json)))
+    Ok((StatusCode::CREATED, Json(payload)))
 }
 
-async fn post_area_extract(
+#[utoipa::path(
+    post,
+    path = "/api/settings/maps/area-extract",
+    request_body = AreaExtractRequest,
+    responses(
+        (status = 201, description = "Area extract job queued", body = EnqueuedJobResponse),
+        (status = 400, description = "Invalid request", body = ErrorBody),
+        (status = 409, description = "Conflict", body = ErrorBody),
+        (status = 500, description = "Internal error", body = ErrorBody)
+    )
+)]
+pub(crate) async fn post_area_extract(
     State(context): State<Arc<AppContext>>,
     Json(request): Json<AreaExtractRequest>,
-) -> AppResult<(StatusCode, Json<serde_json::Value>)> {
+) -> AppResult<(StatusCode, Json<EnqueuedJobResponse>)> {
     let payload = context
         .maps()
         .queue_area_extract(&request.build_key, request.extract)
         .await?;
-    let json = serde_json::to_value(payload).map_err(|error| {
-        AppError::Internal(format!(
-            "could not serialize area extract response: {error}"
-        ))
-    })?;
-    Ok((StatusCode::CREATED, Json(json)))
+    Ok((StatusCode::CREATED, Json(payload)))
 }
 
-async fn post_active_layers(
+#[utoipa::path(
+    post,
+    path = "/api/settings/maps/active-layers",
+    request_body = ActiveLayersRequest,
+    responses(
+        (status = 200, description = "Active layers updated"),
+        (status = 400, description = "Invalid request", body = ErrorBody),
+        (status = 500, description = "Internal error", body = ErrorBody)
+    )
+)]
+pub(crate) async fn post_active_layers(
     State(context): State<Arc<AppContext>>,
     Json(request): Json<ActiveLayersRequest>,
 ) -> AppResult<StatusCode> {
@@ -151,21 +232,37 @@ async fn post_active_layers(
     Ok(StatusCode::OK)
 }
 
-async fn post_rebuild_chunks(
+#[utoipa::path(
+    post,
+    path = "/api/settings/maps/rebuild-chunks",
+    request_body = RebuildChunksRequest,
+    responses(
+        (status = 201, description = "Rebuild jobs queued", body = RebuildChunksResponse),
+        (status = 400, description = "Invalid request", body = ErrorBody),
+        (status = 409, description = "Conflict", body = ErrorBody),
+        (status = 500, description = "Internal error", body = ErrorBody)
+    )
+)]
+pub(crate) async fn post_rebuild_chunks(
     State(context): State<Arc<AppContext>>,
     Json(request): Json<RebuildChunksRequest>,
-) -> AppResult<(StatusCode, Json<serde_json::Value>)> {
+) -> AppResult<(StatusCode, Json<RebuildChunksResponse>)> {
     let payload = context
         .maps()
         .rebuild_chunks(&request.build_key, request.chunk_ids)
         .await?;
-    let json = serde_json::to_value(payload).map_err(|error| {
-        AppError::Internal(format!("could not serialize rebuild response: {error}"))
-    })?;
-    Ok((StatusCode::CREATED, Json(json)))
+    Ok((StatusCode::CREATED, Json(payload)))
 }
 
-async fn get_basemap_config(
+#[utoipa::path(
+    get,
+    path = "/api/basemap",
+    responses(
+        (status = 200, description = "Basemap configuration", body = BasemapConfigResponse),
+        (status = 500, description = "Internal error", body = ErrorBody)
+    )
+)]
+pub(crate) async fn get_basemap_config(
     State(context): State<Arc<AppContext>>,
     headers: HeaderMap,
 ) -> AppResult<Json<BasemapConfigResponse>> {
@@ -230,7 +327,16 @@ async fn get_basemap_config(
     }))
 }
 
-async fn get_basemap_style(
+#[utoipa::path(
+    get,
+    path = "/api/basemap/style.json",
+    responses(
+        (status = 200, description = "MapLibre style JSON", content_type = "application/json"),
+        (status = 400, description = "Invalid request", body = ErrorBody),
+        (status = 500, description = "Internal error", body = ErrorBody)
+    )
+)]
+pub(crate) async fn get_basemap_style(
     State(context): State<Arc<AppContext>>,
     headers: HeaderMap,
 ) -> AppResult<Json<serde_json::Value>> {
@@ -285,7 +391,16 @@ async fn get_basemap_style(
     }
 }
 
-async fn get_basemap_tilejson(
+#[utoipa::path(
+    get,
+    path = "/api/basemap/tilejson.json",
+    responses(
+        (status = 200, description = "TileJSON document", content_type = "application/json"),
+        (status = 400, description = "Invalid request", body = ErrorBody),
+        (status = 500, description = "Internal error", body = ErrorBody)
+    )
+)]
+pub(crate) async fn get_basemap_tilejson(
     State(context): State<Arc<AppContext>>,
     headers: HeaderMap,
 ) -> AppResult<Json<serde_json::Value>> {
@@ -300,7 +415,17 @@ async fn get_basemap_tilejson(
     )))
 }
 
-async fn get_basemap_font(
+#[utoipa::path(
+    get,
+    path = "/api/basemap/fonts/{font_path}",
+    params(("font_path" = String, Path, description = "Fontstack and glyph range path")),
+    responses(
+        (status = 200, description = "Glyph PBF", content_type = "application/x-protobuf"),
+        (status = 400, description = "Invalid request", body = ErrorBody),
+        (status = 500, description = "Internal error", body = ErrorBody)
+    )
+)]
+pub(crate) async fn get_basemap_font(
     State(context): State<Arc<AppContext>>,
     Path(font_path): Path<String>,
 ) -> AppResult<impl axum::response::IntoResponse> {
@@ -319,7 +444,16 @@ async fn get_basemap_font(
     build_binary_response(bytes, "application/x-protobuf")
 }
 
-async fn get_basemap_sprite_json(
+#[utoipa::path(
+    get,
+    path = "/api/basemap/sprite.json",
+    responses(
+        (status = 200, description = "Sprite JSON", content_type = "application/json"),
+        (status = 400, description = "Invalid request", body = ErrorBody),
+        (status = 500, description = "Internal error", body = ErrorBody)
+    )
+)]
+pub(crate) async fn get_basemap_sprite_json(
     State(context): State<Arc<AppContext>>,
 ) -> AppResult<impl axum::response::IntoResponse> {
     let bytes = context
@@ -332,7 +466,16 @@ async fn get_basemap_sprite_json(
     build_binary_response(bytes, "application/json")
 }
 
-async fn get_basemap_sprite_png(
+#[utoipa::path(
+    get,
+    path = "/api/basemap/sprite.png",
+    responses(
+        (status = 200, description = "Sprite PNG", content_type = "image/png"),
+        (status = 400, description = "Invalid request", body = ErrorBody),
+        (status = 500, description = "Internal error", body = ErrorBody)
+    )
+)]
+pub(crate) async fn get_basemap_sprite_png(
     State(context): State<Arc<AppContext>>,
 ) -> AppResult<impl axum::response::IntoResponse> {
     let bytes = context
@@ -345,7 +488,16 @@ async fn get_basemap_sprite_png(
     build_binary_response(bytes, "image/png")
 }
 
-async fn get_basemap_sprite_json_hidpi(
+#[utoipa::path(
+    get,
+    path = "/api/basemap/sprite@2x.json",
+    responses(
+        (status = 200, description = "HiDPI sprite JSON", content_type = "application/json"),
+        (status = 400, description = "Invalid request", body = ErrorBody),
+        (status = 500, description = "Internal error", body = ErrorBody)
+    )
+)]
+pub(crate) async fn get_basemap_sprite_json_hidpi(
     State(context): State<Arc<AppContext>>,
 ) -> AppResult<impl axum::response::IntoResponse> {
     let bytes = context
@@ -358,7 +510,16 @@ async fn get_basemap_sprite_json_hidpi(
     build_binary_response(bytes, "application/json")
 }
 
-async fn get_basemap_sprite_png_hidpi(
+#[utoipa::path(
+    get,
+    path = "/api/basemap/sprite@2x.png",
+    responses(
+        (status = 200, description = "HiDPI sprite PNG", content_type = "image/png"),
+        (status = 400, description = "Invalid request", body = ErrorBody),
+        (status = 500, description = "Internal error", body = ErrorBody)
+    )
+)]
+pub(crate) async fn get_basemap_sprite_png_hidpi(
     State(context): State<Arc<AppContext>>,
 ) -> AppResult<impl axum::response::IntoResponse> {
     let bytes = context
@@ -371,28 +532,103 @@ async fn get_basemap_sprite_png_hidpi(
     build_binary_response(bytes, "image/png")
 }
 
-async fn get_basemap_tile(
+#[utoipa::path(
+    get,
+    path = "/api/basemap/tiles/{z}/{x}/{y}",
+    params(
+        ("z" = u8, Path, description = "Tile zoom"),
+        ("x" = u32, Path, description = "Tile X coordinate"),
+        ("y" = u32, Path, description = "Tile Y coordinate")
+    ),
+    responses(
+        (status = 200, description = "Map tile", content_type = "application/octet-stream"),
+        (status = 204, description = "Tile coordinate has no tile data"),
+        (status = 400, description = "Invalid request", body = ErrorBody),
+        (status = 500, description = "Internal error", body = ErrorBody)
+    )
+)]
+pub(crate) async fn get_basemap_tile(
     State(context): State<Arc<AppContext>>,
     Path((z, x, y)): Path<(u8, u32, u32)>,
-) -> AppResult<impl axum::response::IntoResponse> {
+) -> AppResult<axum::response::Response> {
     let coord = pmtiles::TileCoord::new(z, x, y)
         .map_err(|error| AppError::InvalidRequest(format!("invalid tile coordinate: {error}")))?;
 
-    if let Some(tile) = context.maps().managed_tile(coord).await? {
+    if let Some(tile) = load_basemap_tile(&context, coord).await? {
         return build_tile_response(tile.bytes, tile.tile_type, tile.tile_compression);
     }
 
-    let reader = context
-        .pmtiles_reader()
-        .ok_or_else(|| AppError::InvalidRequest("No PMTiles archive configured".to_owned()))?;
-    let header = reader.get_header();
-    let tile = reader
-        .get_tile(coord)
-        .await
-        .map_err(|error| AppError::Internal(format!("could not read PMTiles tile: {error}")))?
-        .ok_or_else(|| AppError::InvalidRequest("tile not found in PMTiles archive".to_owned()))?;
+    build_empty_tile_response()
+}
 
-    build_tile_response(tile, header.tile_type, header.tile_compression)
+#[utoipa::path(
+    get,
+    path = "/api/basemap/missing-tiles",
+    params(MissingTilesQuery),
+    responses(
+        (status = 200, description = "Missing basemap tile recommendation", body = MissingTilesResponse),
+        (status = 400, description = "Invalid request", body = ErrorBody),
+        (status = 500, description = "Internal error", body = ErrorBody)
+    )
+)]
+pub(crate) async fn get_missing_basemap_tiles(
+    State(context): State<Arc<AppContext>>,
+    Query(query): Query<MissingTilesQuery>,
+) -> AppResult<Json<MissingTilesResponse>> {
+    validate_bbox(query.min_lon, query.min_lat, query.max_lon, query.max_lat)?;
+    if query.tile_zoom > MAX_MISSING_TILE_ZOOM {
+        return Err(AppError::InvalidRequest(format!(
+            "tile_zoom must be at most {MAX_MISSING_TILE_ZOOM}"
+        )));
+    }
+
+    let (min_x, max_x, min_y, max_y) = tile_range_for_bbox(
+        query.min_lon,
+        query.min_lat,
+        query.max_lon,
+        query.max_lat,
+        query.tile_zoom,
+    );
+    let x_count = max_x
+        .checked_sub(min_x)
+        .and_then(|value| value.checked_add(1))
+        .ok_or_else(|| AppError::Internal("invalid x tile range".to_owned()))?;
+    let y_count = max_y
+        .checked_sub(min_y)
+        .and_then(|value| value.checked_add(1))
+        .ok_or_else(|| AppError::Internal("invalid y tile range".to_owned()))?;
+    let scan_count = x_count
+        .checked_mul(y_count)
+        .ok_or_else(|| AppError::InvalidRequest("tile scan is too large".to_owned()))?;
+    if scan_count > MAX_MISSING_TILE_SCAN {
+        return Err(AppError::InvalidRequest(format!(
+            "tile scan is too large; narrow the viewport or lower zoom below {scan_count} tiles"
+        )));
+    }
+
+    let mut missing_tile_count = 0_u32;
+    let mut missing_bounds: Option<[f64; 4]> = None;
+    for x in min_x..=max_x {
+        for y in min_y..=max_y {
+            let coord = pmtiles::TileCoord::new(query.tile_zoom, x, y).map_err(|error| {
+                AppError::Internal(format!("invalid generated tile coordinate: {error}"))
+            })?;
+            if load_basemap_tile(&context, coord).await?.is_none() {
+                missing_tile_count = missing_tile_count.checked_add(1).ok_or_else(|| {
+                    AppError::Internal("missing tile count overflowed".to_owned())
+                })?;
+                missing_bounds = Some(expand_bounds(missing_bounds, tile_bounds_for_coord(coord)));
+            }
+        }
+    }
+
+    Ok(Json(MissingTilesResponse {
+        missing: missing_tile_count > 0,
+        tile_zoom: query.tile_zoom,
+        missing_tile_count,
+        bounds: missing_bounds,
+        max_zoom: (missing_tile_count > 0).then_some(query.tile_zoom),
+    }))
 }
 
 fn config_from_managed_summary(
@@ -420,7 +656,7 @@ fn request_base_url(headers: &HeaderMap) -> String {
         .get(axum::http::header::HOST)
         .and_then(|value| value.to_str().ok())
         .filter(|value| !value.is_empty())
-        .unwrap_or("127.0.0.1:9000");
+        .unwrap_or("127.0.0.1:3000");
     format!("{proto}://{host}")
 }
 
@@ -507,6 +743,73 @@ fn build_tile_response(
     response
         .body(axum::body::Body::from(tile))
         .map_err(|error| AppError::Internal(format!("could not build tile response: {error}")))
+}
+
+struct LoadedBasemapTile {
+    bytes: bytes::Bytes,
+    tile_type: pmtiles::TileType,
+    tile_compression: pmtiles::Compression,
+}
+
+async fn load_basemap_tile(
+    context: &AppContext,
+    coord: pmtiles::TileCoord,
+) -> AppResult<Option<LoadedBasemapTile>> {
+    if let Some(tile) = context.maps().managed_tile(coord).await? {
+        return Ok(Some(LoadedBasemapTile {
+            bytes: tile.bytes,
+            tile_type: tile.tile_type,
+            tile_compression: tile.tile_compression,
+        }));
+    }
+
+    let Some(reader) = context.pmtiles_reader() else {
+        return Ok(None);
+    };
+    let header = reader.get_header();
+    let Some(bytes) = reader
+        .get_tile(coord)
+        .await
+        .map_err(|error| AppError::Internal(format!("could not read PMTiles tile: {error}")))?
+    else {
+        return Ok(None);
+    };
+
+    Ok(Some(LoadedBasemapTile {
+        bytes,
+        tile_type: header.tile_type,
+        tile_compression: header.tile_compression,
+    }))
+}
+
+fn build_empty_tile_response() -> AppResult<axum::response::Response> {
+    axum::response::Response::builder()
+        .status(StatusCode::NO_CONTENT)
+        .body(axum::body::Body::empty())
+        .map_err(|error| {
+            AppError::Internal(format!("could not build empty tile response: {error}"))
+        })
+}
+
+fn expand_bounds(existing: Option<[f64; 4]>, next: [f64; 4]) -> [f64; 4] {
+    match existing {
+        Some(current) => {
+            let [
+                current_min_lon,
+                current_min_lat,
+                current_max_lon,
+                current_max_lat,
+            ] = current;
+            let [next_min_lon, next_min_lat, next_max_lon, next_max_lat] = next;
+            [
+                current_min_lon.min(next_min_lon),
+                current_min_lat.min(next_min_lat),
+                current_max_lon.max(next_max_lon),
+                current_max_lat.max(next_max_lat),
+            ]
+        }
+        None => next,
+    }
 }
 
 fn build_binary_response(

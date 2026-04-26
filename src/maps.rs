@@ -18,6 +18,7 @@ use sea_orm::{
 };
 use serde::{Deserialize, Serialize};
 use tokio::sync::RwLock;
+use utoipa::ToSchema;
 use uuid::Uuid;
 
 use crate::{
@@ -27,7 +28,7 @@ use crate::{
 
 const SELECTED_BUILD_METADATA_KEY: &str = "selected_protomaps_build_key";
 const WORLD_TO_6_CHUNK_ID: &str = "world-to-6";
-const MAX_MERCATOR_LAT: f64 = 85.051_129;
+pub(crate) const MAX_MERCATOR_LAT: f64 = 85.051_129;
 const ACTIVE_JOB_STATUSES: [&str; 3] = ["queued", "running", "cancel_requested"];
 const CANCELLED_STEP: &str = "Cancelled";
 const INTERRUPTED_STEP: &str = "Interrupted";
@@ -52,13 +53,13 @@ pub struct MapsService {
     cancel_flags: Arc<RwLock<HashMap<String, Arc<AtomicBool>>>>,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, ToSchema)]
 pub struct BuildCatalogResponse {
     pub selected_build_key: Option<String>,
     pub builds: Vec<BuildRecord>,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, ToSchema)]
 pub struct BuildRecord {
     pub key: String,
     pub version: Option<String>,
@@ -68,13 +69,13 @@ pub struct BuildRecord {
     pub b3_sum: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, ToSchema)]
 pub struct LocalMapsResponse {
     pub selected_build_key: Option<String>,
     pub chunks: Vec<ChunkRecord>,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, ToSchema)]
 pub struct ChunkRecord {
     pub id: String,
     pub label: String,
@@ -92,7 +93,7 @@ pub struct ChunkRecord {
     pub archives: Vec<ArchiveRecord>,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, ToSchema)]
 pub struct ArchiveRecord {
     pub id: String,
     pub build_key: String,
@@ -107,12 +108,12 @@ pub struct ArchiveRecord {
     pub file_size_bytes: i64,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, ToSchema)]
 pub struct JobListResponse {
     pub jobs: Vec<JobRecord>,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, ToSchema)]
 pub struct JobRecord {
     pub id: String,
     pub kind: String,
@@ -131,13 +132,13 @@ pub struct JobRecord {
     pub finished_at: Option<DateTime<Utc>>,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, ToSchema)]
 pub struct EnqueuedJobResponse {
     pub job_id: String,
     pub chunk_id: String,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, ToSchema)]
 pub struct AreaExtractSpec {
     pub label: String,
     pub min_lon: f64,
@@ -147,7 +148,7 @@ pub struct AreaExtractSpec {
     pub max_zoom: i32,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, ToSchema)]
 pub struct RebuildChunksResponse {
     pub job_ids: Vec<String>,
 }
@@ -374,6 +375,7 @@ impl MapsService {
 
     pub async fn list_jobs(&self) -> AppResult<JobListResponse> {
         let jobs = map_job::Entity::find()
+            .filter(map_job::Column::Status.ne("completed"))
             .order_by_desc(map_job::Column::CreatedAt)
             .all(&self.db)
             .await?;
@@ -642,7 +644,16 @@ impl MapsService {
             }
             TileType::Mvt | TileType::Mlt => {
                 let style = self.load_vendored_vector_style().await?;
-                Ok(Some(rewrite_style_sources(style)))
+                let global_max_zoom = layers
+                    .iter()
+                    .find(|layer| layer.chunk.id == WORLD_TO_6_CHUNK_ID)
+                    .map(|layer| u8::try_from(layer.archive.max_zoom).unwrap_or(0));
+                Ok(Some(rewrite_style_sources(
+                    style,
+                    summary.min_zoom,
+                    summary.max_zoom,
+                    global_max_zoom,
+                )))
             }
             TileType::Unknown => Ok(None),
         }
@@ -1436,14 +1447,19 @@ impl MapsService {
     }
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, ToSchema)]
 pub struct ActiveLayerUpdate {
     pub chunk_id: String,
     pub enabled: bool,
     pub display_order: i32,
 }
 
-fn rewrite_style_sources(mut style: serde_json::Value) -> serde_json::Value {
+fn rewrite_style_sources(
+    mut style: serde_json::Value,
+    min_zoom: u8,
+    max_zoom: u8,
+    global_max_zoom: Option<u8>,
+) -> serde_json::Value {
     if let Some(style_object) = style.as_object_mut() {
         if style_object.contains_key("sprite") {
             style_object.insert(
@@ -1458,18 +1474,82 @@ fn rewrite_style_sources(mut style: serde_json::Value) -> serde_json::Value {
             );
         }
     }
+    let source_names = style
+        .get("sources")
+        .and_then(serde_json::Value::as_object)
+        .map(|sources| sources.keys().cloned().collect::<Vec<_>>())
+        .unwrap_or_default();
     if let Some(sources) = style
         .get_mut("sources")
         .and_then(serde_json::Value::as_object_mut)
     {
-        for source in sources.values_mut() {
-            *source = serde_json::json!({
-                "type": "vector",
-                "url": "/api/basemap/tilejson.json"
-            });
+        for source_name in &source_names {
+            if let Some(source) = sources.get_mut(source_name) {
+                *source = vector_tile_source(min_zoom, global_max_zoom.unwrap_or(max_zoom));
+            }
+            if let Some(global_zoom) = global_max_zoom
+                && global_zoom < max_zoom
+            {
+                sources.insert(
+                    detail_source_name(source_name),
+                    vector_tile_source(global_zoom.saturating_add(1), max_zoom),
+                );
+            }
         }
     }
+    if let Some(global_zoom) = global_max_zoom
+        && global_zoom < max_zoom
+        && let Some(layers) = style
+            .get_mut("layers")
+            .and_then(serde_json::Value::as_array_mut)
+    {
+        let mut rewritten_layers = Vec::with_capacity(layers.len().saturating_mul(2));
+        for layer in std::mem::take(layers) {
+            let detail_layer = detail_layer_for(&layer, &source_names);
+            rewritten_layers.push(layer);
+            if let Some(detail_layer) = detail_layer {
+                rewritten_layers.push(detail_layer);
+            }
+        }
+        *layers = rewritten_layers;
+    }
     style
+}
+
+fn vector_tile_source(min_zoom: u8, max_zoom: u8) -> serde_json::Value {
+    serde_json::json!({
+        "type": "vector",
+        "tiles": ["/api/basemap/tiles/{z}/{x}/{y}"],
+        "minzoom": min_zoom,
+        "maxzoom": max_zoom
+    })
+}
+
+fn detail_source_name(source_name: &str) -> String {
+    format!("{source_name}-detail")
+}
+
+fn detail_layer_for(
+    layer: &serde_json::Value,
+    source_names: &[String],
+) -> Option<serde_json::Value> {
+    let source_name = layer.get("source")?.as_str()?;
+    if !source_names.iter().any(|name| name == source_name) {
+        return None;
+    }
+
+    let mut detail_layer = layer.clone();
+    let layer_object = detail_layer.as_object_mut()?;
+    let layer_id = layer_object.get("id")?.as_str()?.to_owned();
+    layer_object.insert(
+        "id".to_owned(),
+        serde_json::Value::String(format!("{layer_id}-detail")),
+    );
+    layer_object.insert(
+        "source".to_owned(),
+        serde_json::Value::String(detail_source_name(source_name)),
+    );
+    Some(detail_layer)
 }
 
 fn tile_type_name(tile_type: TileType) -> &'static str {
@@ -1539,7 +1619,19 @@ fn coords_for_chunk(chunk: &map_chunk::Model) -> AppResult<Vec<TileCoord>> {
     Ok(coords)
 }
 
-fn tile_range_for_bbox(
+pub(crate) fn tile_bounds_for_coord(coord: TileCoord) -> [f64; 4] {
+    let z = coord.z();
+    let x = coord.x();
+    let y = coord.y();
+    let tiles = f64::from(1_u32 << z);
+    let min_lon = f64::from(x) / tiles * 360.0 - 180.0;
+    let max_lon = f64::from(x + 1) / tiles * 360.0 - 180.0;
+    let min_lat = tile_y_to_lat(y + 1, z);
+    let max_lat = tile_y_to_lat(y, z);
+    [min_lon, min_lat, max_lon, max_lat]
+}
+
+pub(crate) fn tile_range_for_bbox(
     min_lon: f64,
     min_lat: f64,
     max_lon: f64,
@@ -1569,7 +1661,18 @@ fn lat_to_tile_y(lat: f64, tiles: f64) -> f64 {
     ((1.0 - (projected / std::f64::consts::PI)) / 2.0) * tiles
 }
 
-fn validate_bbox(min_lon: f64, min_lat: f64, max_lon: f64, max_lat: f64) -> AppResult<()> {
+fn tile_y_to_lat(y: u32, z: u8) -> f64 {
+    let tiles = f64::from(1_u32 << z);
+    let n = std::f64::consts::PI - (2.0 * std::f64::consts::PI * f64::from(y) / tiles);
+    n.sinh().atan().to_degrees()
+}
+
+pub(crate) fn validate_bbox(
+    min_lon: f64,
+    min_lat: f64,
+    max_lon: f64,
+    max_lat: f64,
+) -> AppResult<()> {
     if min_lon >= max_lon || min_lat >= max_lat {
         return Err(AppError::InvalidRequest(
             "bounding box must have increasing min/max coordinates".to_owned(),
@@ -1695,10 +1798,22 @@ mod tests {
                     "type": "vector",
                     "url": "pmtiles://example"
                 }
-            }
+            },
+            "layers": [
+                {
+                    "id": "background",
+                    "type": "background"
+                },
+                {
+                    "id": "earth",
+                    "type": "fill",
+                    "source": "basemap",
+                    "source-layer": "earth"
+                }
+            ]
         });
 
-        let rewritten = rewrite_style_sources(style);
+        let rewritten = rewrite_style_sources(style, 0, 12, Some(6));
 
         assert_eq!(
             rewritten.get("sprite").and_then(serde_json::Value::as_str),
@@ -1709,8 +1824,22 @@ mod tests {
             Some(LOCAL_MANAGED_GLYPHS_PATH)
         );
         assert_eq!(
-            rewritten["sources"]["basemap"]["url"].as_str(),
-            Some("/api/basemap/tilejson.json")
+            rewritten["sources"]["basemap"]["tiles"][0].as_str(),
+            Some("/api/basemap/tiles/{z}/{x}/{y}")
+        );
+        assert_eq!(rewritten["sources"]["basemap"]["maxzoom"], 6);
+        assert_eq!(
+            rewritten["sources"]["basemap-detail"]["tiles"][0].as_str(),
+            Some("/api/basemap/tiles/{z}/{x}/{y}")
+        );
+        assert_eq!(rewritten["sources"]["basemap-detail"]["minzoom"], 7);
+        assert_eq!(rewritten["sources"]["basemap-detail"]["maxzoom"], 12);
+        assert_eq!(rewritten["layers"][1]["id"], "earth");
+        assert_eq!(rewritten["layers"][1]["source"], "basemap");
+        assert_eq!(rewritten["layers"][2]["id"], "earth-detail");
+        assert_eq!(
+            rewritten["layers"][2]["source"],
+            serde_json::Value::String("basemap-detail".to_owned())
         );
     }
 }

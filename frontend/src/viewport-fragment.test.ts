@@ -18,6 +18,20 @@ describe("formatViewportFragment", () => {
 			}),
 		).toBe("map=-27.46980,153.02510,12.35");
 	});
+
+	test("formats the selected object into the map fragment", () => {
+		expect(
+			formatViewportFragment({
+				latitude: -27.4698,
+				longitude: 153.0251,
+				zoom: 12.3456,
+				selectedObject: {
+					objectType: "place",
+					id: "place 1",
+				},
+			}),
+		).toBe("map=-27.46980,153.02510,12.35&object=place:place%201");
+	});
 });
 
 describe("writeViewportFragment", () => {
@@ -43,6 +57,54 @@ describe("writeViewportFragment", () => {
 			"/settings?foo=bar#map=-27.46980,153.02510,9.50",
 		);
 	});
+
+	test("preserves the current selected object when updating only the viewport", () => {
+		const replaceState = vi.fn();
+
+		writeViewportFragment(
+			{
+				latitude: -27.4698,
+				longitude: 153.0251,
+				zoom: 9.5,
+			},
+			{
+				pathname: "/",
+				search: "",
+				hash: "#map=-27.00000,153.00000,3.00&object=track:track-1",
+			},
+			{ replaceState },
+		);
+
+		expect(replaceState).toHaveBeenCalledWith(
+			{},
+			"",
+			"/#map=-27.46980,153.02510,9.50&object=track:track-1",
+		);
+	});
+
+	test("does not touch history when the fragment is already current", () => {
+		const replaceState = vi.fn();
+
+		writeViewportFragment(
+			{
+				latitude: -27.4698,
+				longitude: 153.0251,
+				zoom: 9.5,
+				selectedObject: {
+					objectType: "track",
+					id: "track-1",
+				},
+			},
+			{
+				pathname: "/",
+				search: "",
+				hash: "#map=-27.46980,153.02510,9.50&object=track:track-1",
+			},
+			{ replaceState },
+		);
+
+		expect(replaceState).not.toHaveBeenCalled();
+	});
 });
 
 describe("parseViewportFragment", () => {
@@ -51,6 +113,22 @@ describe("parseViewportFragment", () => {
 			latitude: -27.4698,
 			longitude: 153.0251,
 			zoom: 9.5,
+		});
+	});
+
+	test("parses the selected object from the map fragment", () => {
+		expect(
+			parseViewportFragment(
+				"#map=-27.46980,153.02510,9.50&object=place:place%201",
+			),
+		).toEqual({
+			latitude: -27.4698,
+			longitude: 153.0251,
+			zoom: 9.5,
+			selectedObject: {
+				objectType: "place",
+				id: "place 1",
+			},
 		});
 	});
 

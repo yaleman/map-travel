@@ -12,7 +12,6 @@ run = "cargo build"
 [tasks.build]
 depends = ["frontend-build", "rust-build"]
 
-
 [tasks.clippy]
 run = "cargo clippy --all-targets --all-features -- -D warnings"
 

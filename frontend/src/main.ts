@@ -4,15 +4,40 @@ import maplibregl, {
 } from "maplibre-gl";
 import "maplibre-gl/dist/maplibre-gl.css";
 import { googleMapsViewportUrl } from "./google-maps-link";
+import {
+	readRenderGpxHeight,
+	writeRenderGpxHeight,
+} from "./gpx-height-setting";
+import {
+	missingTilesQueryString,
+	missingTilesSettingsUrl,
+	parseSettingsAreaPrefill,
+	type MissingTilesResponse,
+	type SettingsAreaPrefill,
+} from "./missing-tiles";
 import { displayTrackColor } from "./track-display";
+import {
+	buildElevatedTrackExtrusionFeatureCollection,
+	elevatedTrackExtrusionStats,
+	formatElevationRange,
+	trackElevationProfile,
+	trackElevationRange,
+	type ElevationProfile,
+	type ElevatedTrackExtrusionProperties,
+	type ElevatedTrackExtrusionStats,
+} from "./track-elevation";
 import { filterVisibleTracks } from "./track-visibility";
 import {
 	buildViewUrl,
 	createDebouncedViewportFragmentUpdater,
 	parseViewportFragment,
 	writeViewportFragment,
+	type ViewportFragmentState,
 } from "./viewport-fragment";
-import { sortViewportObjectsByDistance } from "./viewport-objects";
+import {
+	filterViewportObjects,
+	sortViewportObjectsByDistance,
+} from "./viewport-objects";
 import {
 	readWorkspaceSidebarCollapsed,
 	writeWorkspaceSidebarCollapsed,
@@ -182,6 +207,17 @@ interface SelectedMapObjectState {
 	objectType: ObjectType;
 }
 
+interface MapTravelDebug {
+	elevatedTrackExtrusionStats: () => ElevatedTrackExtrusionStats;
+	hasLayer: (id: string) => boolean;
+}
+
+declare global {
+	interface Window {
+		__mapTravelDebug?: MapTravelDebug;
+	}
+}
+
 const workspaceScreen = must<HTMLElement>("#workspace-screen");
 const workspaceShell = must<HTMLElement>("#workspace-shell");
 const workspaceSidebar = must<HTMLElement>("#workspace-sidebar");
@@ -213,6 +249,9 @@ const collapsedOpenSettingsButton = must<HTMLButtonElement>(
 );
 const closeSettingsButton = must<HTMLButtonElement>("#close-settings");
 const openGoogleMapsLink = must<HTMLAnchorElement>("#open-google-maps");
+const missingMapTilesLink = must<HTMLAnchorElement>("#missing-map-tiles");
+const rightPanelSearchForm = must<HTMLFormElement>("#right-panel-search-form");
+const rightPanelSearchInput = must<HTMLInputElement>("#right-panel-search");
 const settingsContent = must<HTMLDivElement>("#settings-content");
 const settingsMapDetail = must<HTMLSpanElement>("#settings-map-detail");
 
@@ -232,8 +271,10 @@ const defaultStyle: StyleSpecification = {
 
 let workspaceMap: MapGL;
 let settingsMap: MapGL | null = null;
+let currentBasemapConfig: BasemapConfig | null = null;
 let collections: CollectionRecord[] = [];
 let lastData: MapObjectsResponse = { places: [], tracks: [] };
+let globalSearchResults: MapObjectsResponse | null = null;
 let addPlaceMode = false;
 let pendingPlace: PendingPlaceState | null = null;
 let areaSelectionMode = false;
@@ -246,9 +287,19 @@ let selectedMapObject: SelectedMapObjectState | null = null;
 const hiddenTrackIds = new Set<string>();
 let currentView: ViewMode = getViewFromLocation();
 let workspaceSidebarCollapsed = readWorkspaceSidebarCollapsed();
+let renderGpxHeight = readRenderGpxHeight();
 let settingsRefreshTimer: number | null = null;
+let missingTilesTimer: number | null = null;
+let missingTilesRequestSequence = 0;
+let lastAppliedSettingsPrefillSearch = "";
+let pendingSettingsAreaFit = false;
+let elevatedTrackExtrusionData: GeoJSON.FeatureCollection<
+	GeoJSON.Polygon,
+	ElevatedTrackExtrusionProperties
+> =
+	buildElevatedTrackExtrusionFeatureCollection([]);
 const scheduleViewportFragmentUpdate = createDebouncedViewportFragmentUpdater(
-	writeViewportFragment,
+	writeWorkspaceFragment,
 	250,
 );
 
@@ -273,8 +324,10 @@ void bootstrap();
 
 async function bootstrap(): Promise<void> {
 	const basemap = await applyBasemapConfig();
-	const initialViewport = parseViewportFragment(window.location.hash);
-	const initialWorkspaceViewport = initialViewport ?? {
+	currentBasemapConfig = basemap;
+	const initialFragment = parseViewportFragment(window.location.hash);
+	selectedMapObject = initialFragment?.selectedObject ?? null;
+	const initialWorkspaceViewport = initialFragment ?? {
 		latitude: -27.4698,
 		longitude: 153.0251,
 		zoom: 3,
@@ -289,14 +342,17 @@ async function bootstrap(): Promise<void> {
 		],
 		zoom: initialWorkspaceViewport.zoom,
 	});
+	installMapTravelDebug();
 	updateGoogleMapsLink(initialWorkspaceViewport);
 	workspaceMap.addControl(new maplibregl.NavigationControl(), "top-right");
 	workspaceMap.on("load", () => {
 		ensureWorkspaceOverlayLayers();
 		void refreshMapData();
+		scheduleMissingTilesCheck();
 	});
 	workspaceMap.on("moveend", () => {
 		void refreshMapData();
+		scheduleMissingTilesCheck();
 	});
 	workspaceMap.on("move", () => {
 		const viewport = {
@@ -319,14 +375,18 @@ async function bootstrap(): Promise<void> {
 			layers: ["tracks-line", "places-circle"],
 		});
 		if (clickedFeatures.length === 0) {
-			selectedMapObject = null;
 			renderDrawerEmpty();
 		}
 	});
 
 	wireEventHandlers();
+	applySettingsAreaPrefillFromLocation(true);
+	if (selectedMapObject) {
+		void renderSelectedMapObjectById(selectedMapObject);
+	}
 	await refreshCollections();
 	await renderView(false);
+	scheduleInitialMapDataRefresh();
 }
 
 function updateGoogleMapsLink(state: {
@@ -335,6 +395,132 @@ function updateGoogleMapsLink(state: {
 	zoom: number;
 }): void {
 	openGoogleMapsLink.href = googleMapsViewportUrl(state);
+}
+
+function scheduleMissingTilesCheck(): void {
+	if (missingTilesTimer !== null) {
+		window.clearTimeout(missingTilesTimer);
+	}
+	missingTilesTimer = window.setTimeout(() => {
+		missingTilesTimer = null;
+		void refreshMissingTilesWarning();
+	}, 400);
+}
+
+async function refreshMissingTilesWarning(): Promise<void> {
+	if (!workspaceMap || !workspaceMap.isStyleLoaded()) {
+		return;
+	}
+	if (!currentBasemapConfig?.enabled) {
+		hideMissingTilesWarning();
+		return;
+	}
+
+	const bounds = workspaceMap.getBounds();
+	const query = missingTilesQueryString(
+		{
+			minLon: bounds.getWest(),
+			minLat: bounds.getSouth(),
+			maxLon: bounds.getEast(),
+			maxLat: bounds.getNorth(),
+		},
+		workspaceMap.getZoom(),
+	);
+	const requestSequence = (missingTilesRequestSequence += 1);
+	try {
+		const recommendation = await fetchJson<MissingTilesResponse>(
+			`/api/basemap/missing-tiles?${query}`,
+		);
+		if (requestSequence !== missingTilesRequestSequence) {
+			return;
+		}
+		updateMissingTilesWarning(recommendation);
+	} catch (error) {
+		console.error("Could not check local map tile coverage", error);
+		hideMissingTilesWarning();
+	}
+}
+
+function updateMissingTilesWarning(
+	recommendation: MissingTilesResponse,
+): void {
+	if (!recommendation.missing || !recommendation.bounds) {
+		hideMissingTilesWarning();
+		return;
+	}
+	missingMapTilesLink.href = missingTilesSettingsUrl(recommendation);
+	missingMapTilesLink.hidden = false;
+}
+
+function hideMissingTilesWarning(): void {
+	missingMapTilesLink.hidden = true;
+	missingMapTilesLink.href = "/settings";
+}
+
+function installMapTravelDebug(): void {
+	window.__mapTravelDebug = {
+		elevatedTrackExtrusionStats: () =>
+			elevatedTrackExtrusionStats(elevatedTrackExtrusionData),
+		hasLayer: (id: string) => Boolean(workspaceMap.getLayer(id)),
+	};
+}
+
+function scheduleInitialMapDataRefresh(attempt = 0): void {
+	window.setTimeout(() => {
+		if (!workspaceMap.isStyleLoaded()) {
+			if (attempt < 40) {
+				scheduleInitialMapDataRefresh(attempt + 1);
+			}
+			return;
+		}
+
+		ensureWorkspaceOverlayLayers();
+		void refreshMapData();
+	}, 50);
+}
+
+function writeWorkspaceFragment(state: ViewportFragmentState): void {
+	writeViewportFragment({
+		...state,
+		selectedObject: selectedMapObject,
+	});
+}
+
+function currentWorkspaceFragmentState(): ViewportFragmentState {
+	const center = workspaceMap.getCenter();
+	return {
+		latitude: center.lat,
+		longitude: center.lng,
+		zoom: workspaceMap.getZoom(),
+		selectedObject: selectedMapObject,
+	};
+}
+
+function selectMapObject(object: SelectedMapObjectState): void {
+	selectedMapObject = object;
+	updateWorkspaceSelectionSources();
+	updateElevatedTrackExtrusions();
+	writeWorkspaceFragment(currentWorkspaceFragmentState());
+}
+
+function clearSelectedMapObject(): void {
+	selectedMapObject = null;
+	updateWorkspaceSelectionSources();
+	updateElevatedTrackExtrusions();
+	writeWorkspaceFragment(currentWorkspaceFragmentState());
+}
+
+async function copySelectedObjectLink(button: HTMLButtonElement): Promise<void> {
+	await navigator.clipboard.writeText(selectedObjectLink());
+	button.textContent = "Copied";
+	window.setTimeout(() => {
+		button.textContent = "Copy link";
+	}, 1_500);
+}
+
+function selectedObjectLink(): string {
+	writeWorkspaceFragment(currentWorkspaceFragmentState());
+	return window.location.href;
 }
 
 function applyWorkspaceSidebarState(): void {
@@ -439,6 +625,30 @@ function wireEventHandlers(): void {
 		await refreshMapData();
 	});
 
+	rightPanelSearchInput.addEventListener("input", () => {
+		globalSearchResults = null;
+		pendingPlace = null;
+		clearSelectedMapObject();
+		renderViewportObjectList();
+	});
+
+	rightPanelSearchForm.addEventListener("submit", async (event) => {
+		event.preventDefault();
+		const query = rightPanelSearchInput.value.trim();
+		if (!query) {
+			globalSearchResults = null;
+			renderViewportObjectList();
+			return;
+		}
+		const params = new URLSearchParams({ query });
+		globalSearchResults = await fetchJson<MapObjectsResponse>(
+			`/api/search?${params.toString()}`,
+		);
+		pendingPlace = null;
+		clearSelectedMapObject();
+		renderGlobalSearchResults();
+	});
+
 	toggleSidebarButton.addEventListener("click", () => {
 		setWorkspaceSidebarCollapsed(true);
 	});
@@ -466,6 +676,7 @@ function wireEventHandlers(): void {
 async function handlePopState(): Promise<void> {
 	const view = getViewFromLocation();
 	currentView = view;
+	applySettingsAreaPrefillFromLocation();
 	await renderView(false);
 }
 
@@ -492,22 +703,63 @@ async function renderView(syncHistory: boolean): Promise<void> {
 	settingsScreen.classList.toggle("hidden", currentView !== "settings");
 
 	if (currentView === "settings") {
+		applySettingsAreaPrefillFromLocation();
 		addPlaceMode = false;
 		updateModeUi();
 		await refreshSettingsData();
 		await ensureSettingsMap();
-		syncSettingsMapToWorkspace();
 		settingsMap?.resize();
+		if (pendingSettingsAreaFit) {
+			fitSettingsMapToAreaSelection();
+		} else {
+			syncSettingsMapToWorkspace();
+		}
 		updateSelectionSource();
 		updateSettingsMapDetail();
 	} else {
 		clearSettingsRefreshTimer();
 		workspaceMap.resize();
+		await refreshMapData();
 	}
 }
 
 function pathForView(view: ViewMode): string {
 	return view === "settings" ? "/settings" : "/";
+}
+
+function applySettingsAreaPrefillFromLocation(force = false): void {
+	if (currentView !== "settings") {
+		return;
+	}
+	applySettingsAreaPrefill(window.location.search, force);
+}
+
+function applySettingsAreaPrefill(search: string, force = false): void {
+	if (!force && search === lastAppliedSettingsPrefillSearch) {
+		return;
+	}
+	lastAppliedSettingsPrefillSearch = search;
+	const prefill = parseSettingsAreaPrefill(search);
+	if (!prefill) {
+		return;
+	}
+	applyParsedSettingsAreaPrefill(prefill);
+}
+
+function applyParsedSettingsAreaPrefill(prefill: SettingsAreaPrefill): void {
+	areaSelection = {
+		start: { lng: prefill.bounds.minLon, lat: prefill.bounds.minLat },
+		end: { lng: prefill.bounds.maxLon, lat: prefill.bounds.maxLat },
+	};
+	areaExtractForm = {
+		label: prefill.label,
+		maxZoom: prefill.maxZoom,
+	};
+	areaSelectionMode = false;
+	pendingSettingsAreaFit = true;
+	updateSelectionSource();
+	updateSettingsMapDetail();
+	syncAreaExtractUi();
 }
 
 async function ensureSettingsMap(): Promise<void> {
@@ -526,6 +778,7 @@ async function ensureSettingsMap(): Promise<void> {
 	settingsMap.on("load", () => {
 		ensureSettingsMapLayers();
 		updateSelectionSource();
+		fitSettingsMapToAreaSelection();
 		updateSettingsMapDetail();
 	});
 	settingsMap.on("click", (event) => {
@@ -544,6 +797,28 @@ function syncSettingsMapToWorkspace(): void {
 		center: workspaceMap.getCenter(),
 		zoom: workspaceMap.getZoom(),
 	});
+}
+
+function fitSettingsMapToAreaSelection(): void {
+	if (!pendingSettingsAreaFit || !settingsMap) {
+		return;
+	}
+	const bounds = normalizedAreaBounds();
+	if (!bounds) {
+		pendingSettingsAreaFit = false;
+		return;
+	}
+	settingsMap.fitBounds(
+		[
+			[bounds.minLon, bounds.minLat],
+			[bounds.maxLon, bounds.maxLat],
+		],
+		{
+			padding: 48,
+			maxZoom: Number(areaExtractForm.maxZoom || "8"),
+		},
+	);
+	pendingSettingsAreaFit = false;
 }
 
 async function refreshCollections(): Promise<void> {
@@ -578,6 +853,9 @@ async function refreshMapData(): Promise<void> {
 	if (!workspaceMap || !workspaceMap.isStyleLoaded()) {
 		return;
 	}
+	if (isObjectEditorOpen()) {
+		return;
+	}
 
 	const bounds = workspaceMap.getBounds();
 	const params = new URLSearchParams({
@@ -599,7 +877,14 @@ async function refreshMapData(): Promise<void> {
 		`/api/map-objects?${params.toString()}`,
 	);
 	updateWorkspaceOverlaySources();
-	syncDrawerSelection();
+	await syncDrawerSelection();
+}
+
+function isObjectEditorOpen(): boolean {
+	return Boolean(
+		document.querySelector("#place-edit-form") ??
+			document.querySelector("#track-edit-form"),
+	);
 }
 
 function ensureWorkspaceOverlayLayers(): void {
@@ -614,6 +899,13 @@ function ensureWorkspaceOverlayLayers(): void {
 		workspaceMap.addSource("tracks", {
 			type: "geojson",
 			data: emptyFeatureCollection(),
+		});
+	}
+
+	if (!workspaceMap.getSource("elevated-track-extrusions")) {
+		workspaceMap.addSource("elevated-track-extrusions", {
+			type: "geojson",
+			data: elevatedTrackExtrusionData,
 		});
 	}
 
@@ -646,10 +938,30 @@ function ensureWorkspaceOverlayLayers(): void {
 			const feature = event.features?.[0];
 			if (!feature) return;
 			const trackId = String(feature.properties?.id ?? "");
-			const track = lastData.tracks.find((item) => item.id === trackId);
+			const track = findTrackById(trackId);
 			if (track) {
 				renderTrackDetail(track);
 			}
+		});
+	}
+
+	if (!workspaceMap.getLayer("elevated-track-extrusions")) {
+		workspaceMap.addLayer({
+			id: "elevated-track-extrusions",
+			type: "fill-extrusion",
+			source: "elevated-track-extrusions",
+			paint: {
+				"fill-extrusion-base": 0,
+				"fill-extrusion-height": ["get", "height_m"],
+				"fill-extrusion-color": [
+					"case",
+					["boolean", ["get", "selected"], false],
+					"#bb5f3a",
+					"#d7a18d",
+				],
+				"fill-extrusion-opacity": 0.78,
+				"fill-extrusion-vertical-gradient": true,
+			},
 		});
 	}
 
@@ -669,7 +981,7 @@ function ensureWorkspaceOverlayLayers(): void {
 			const feature = event.features?.[0];
 			if (!feature) return;
 			const placeId = String(feature.properties?.id ?? "");
-			const place = lastData.places.find((item) => item.id === placeId);
+			const place = findPlaceById(placeId);
 			if (place) {
 				renderPlaceDetail(place);
 			}
@@ -795,6 +1107,7 @@ function updateWorkspaceOverlaySources(): void {
 			),
 		);
 	}
+	updateElevatedTrackExtrusions();
 	if (placeSource?.type === "geojson") {
 		placeSource.setData(buildPlaceFeatureCollection(lastData.places));
 	}
@@ -812,9 +1125,41 @@ function updateWorkspaceSelectionSources(): void {
 	}
 }
 
+function updateElevatedTrackExtrusions(): void {
+	elevatedTrackExtrusionData = renderGpxHeight
+		? buildElevatedTrackExtrusionFeatureCollection(
+				elevatedTracksForMap().map((track) => ({
+					id: track.id,
+					geometry: parseTrackGeometry(track),
+					selected:
+						selectedMapObject?.objectType === "track" &&
+						selectedMapObject.id === track.id,
+				})),
+			)
+		: buildElevatedTrackExtrusionFeatureCollection([]);
+	const source = workspaceMap.getSource("elevated-track-extrusions");
+	if (source?.type === "geojson") {
+		source.setData(elevatedTrackExtrusionData);
+	}
+}
+
+function elevatedTracksForMap(): TrackRecord[] {
+	const tracks = filterVisibleTracks(lastData.tracks, hiddenTrackIds);
+	if (selectedMapObject?.objectType !== "track") {
+		return tracks;
+	}
+	if (hiddenTrackIds.has(selectedMapObject.id)) {
+		return tracks;
+	}
+	const selectedTrack = findTrackById(selectedMapObject.id);
+	if (!selectedTrack || tracks.some((track) => track.id === selectedTrack.id)) {
+		return tracks;
+	}
+	return [...tracks, selectedTrack];
+}
+
 function renderDrawerEmpty(): void {
-	selectedMapObject = null;
-	updateWorkspaceSelectionSources();
+	clearSelectedMapObject();
 	renderViewportObjectList();
 }
 
@@ -823,16 +1168,19 @@ function updateDrawerMessage(message: string): void {
 }
 
 function renderTrackDetail(track: TrackRecord): void {
-	selectedMapObject = {
+	const geometry = parseTrackGeometry(track);
+	const elevationRange = trackElevationRange(geometry);
+	const elevationProfile = trackElevationProfile(geometry);
+	selectMapObject({
 		id: track.id,
 		objectType: "track",
-	};
-	updateWorkspaceSelectionSources();
+	});
 	detailPanel.innerHTML = `
     <div class="drawer-card">
       <h2>${escapeHtml(track.title ?? "Untitled track")}</h2>
       <div class="inline-actions">
         <button id="edit-track" class="secondary" type="button">Edit</button>
+        <button id="copy-object-link" class="secondary" type="button">Copy link</button>
         <button id="toggle-track-visibility" class="secondary" type="button">${
 					hiddenTrackIds.has(track.id) ? "Show on map" : "Hide from map"
 				}</button>
@@ -845,13 +1193,18 @@ function renderTrackDetail(track: TrackRecord): void {
       ${track.notes ? `<div>${escapeHtml(track.notes)}</div>` : ""}
       <div class="detail-list">
         ${track.original_filename ? `<div><strong>Original file</strong><br />${escapeHtml(track.original_filename)}</div>` : ""}
+        ${elevationRange ? `<div><strong>Elevation</strong><br />${escapeHtml(formatElevationRange(elevationRange))}</div>` : ""}
         <div><strong>Bounds</strong><br />${track.min_lat.toFixed(4)}, ${track.min_lon.toFixed(4)} → ${track.max_lat.toFixed(4)}, ${track.max_lon.toFixed(4)}</div>
       </div>
+      ${elevationProfile ? renderElevationReliefMap(elevationProfile, track) : ""}
     </div>
   `;
 
 	must<HTMLButtonElement>("#edit-track").addEventListener("click", () => {
 		openTrackEditor(track);
+	});
+	must<HTMLButtonElement>("#copy-object-link").addEventListener("click", (event) => {
+		void copySelectedObjectLink(event.currentTarget);
 	});
 	must<HTMLButtonElement>("#toggle-track-visibility").addEventListener(
 		"click",
@@ -867,17 +1220,88 @@ function renderTrackDetail(track: TrackRecord): void {
 	);
 }
 
+function renderElevationReliefMap(
+	profile: ElevationProfile,
+	track: TrackRecord,
+): string {
+	const width = 320;
+	const height = 118;
+	const left = 10;
+	const right = 10;
+	const top = 12;
+	const bottom = 28;
+	const plotWidth = width - left - right;
+	const plotHeight = height - top - bottom;
+	const baselineY = top + plotHeight;
+	const min = profile.range.min;
+	const max = profile.range.max;
+	const span = max - min;
+	const pointFor = (point: { progress: number; elevationMeters: number }) => {
+		const x = left + point.progress * plotWidth;
+		const normalized = span === 0 ? 0.5 : (point.elevationMeters - min) / span;
+		const y = top + (1 - normalized) * plotHeight;
+		return { x, y };
+	};
+	const linePaths = profile.segments
+		.map((segment) =>
+			segment.points
+				.map((point, index) => {
+					const { x, y } = pointFor(point);
+					return `${index === 0 ? "M" : "L"} ${x.toFixed(2)} ${y.toFixed(2)}`;
+				})
+				.join(" "),
+		)
+		.join(" ");
+	const areaPaths = profile.segments
+		.map((segment) => {
+			const points = segment.points.map(pointFor);
+			const first = points[0];
+			const last = points.at(-1);
+			if (!first || !last) {
+				return "";
+			}
+			return [
+				`M ${first.x.toFixed(2)} ${baselineY.toFixed(2)}`,
+				...points.map(({ x, y }) => `L ${x.toFixed(2)} ${y.toFixed(2)}`),
+				`L ${last.x.toFixed(2)} ${baselineY.toFixed(2)}`,
+				"Z",
+			].join(" ");
+		})
+		.filter(Boolean)
+		.join(" ");
+	const startLabel = track.start_time ? formatCompactTimestamp(track.start_time) : "Start";
+	const endLabel = track.end_time ? formatCompactTimestamp(track.end_time) : "End";
+
+	return `
+    <div class="elevation-relief" aria-label="Elevation profile">
+      <div class="elevation-relief-header">
+        <strong>Elevation profile</strong>
+        <span>${escapeHtml(formatElevationRange(profile.range))}</span>
+      </div>
+      <svg class="elevation-relief-map" viewBox="0 0 ${width} ${height}" role="img" aria-label="Elevation change over time" preserveAspectRatio="none">
+        <path class="elevation-relief-grid" d="M ${left} ${top} H ${width - right} M ${left} ${baselineY} H ${width - right}" />
+        <path class="elevation-relief-area" d="${areaPaths}" />
+        <path class="elevation-relief-line" d="${linePaths}" />
+        <text class="elevation-relief-label elevation-relief-label-high" x="${left}" y="${top + 5}">${escapeHtml(`${Math.round(max)} m`)}</text>
+        <text class="elevation-relief-label elevation-relief-label-low" x="${left}" y="${baselineY - 4}">${escapeHtml(`${Math.round(min)} m`)}</text>
+        <text class="elevation-relief-time" x="${left}" y="${height - 7}">${escapeHtml(startLabel)}</text>
+        <text class="elevation-relief-time elevation-relief-time-end" x="${width - right}" y="${height - 7}">${escapeHtml(endLabel)}</text>
+      </svg>
+    </div>
+  `;
+}
+
 function renderPlaceDetail(place: PlaceRecord): void {
-	selectedMapObject = {
+	selectMapObject({
 		id: place.id,
 		objectType: "place",
-	};
-	updateWorkspaceSelectionSources();
+	});
 	detailPanel.innerHTML = `
     <div class="drawer-card">
       <h2>${escapeHtml(place.name)}</h2>
       <div class="inline-actions">
         <button id="edit-place" class="secondary" type="button">Edit</button>
+        <button id="copy-object-link" class="secondary" type="button">Copy link</button>
       </div>
       <div class="meta-row">
         <span class="meta-pill">Place</span>
@@ -894,23 +1318,52 @@ function renderPlaceDetail(place: PlaceRecord): void {
 	must<HTMLButtonElement>("#edit-place").addEventListener("click", () => {
 		openPlaceEditor(place);
 	});
+	must<HTMLButtonElement>("#copy-object-link").addEventListener("click", (event) => {
+		void copySelectedObjectLink(event.currentTarget);
+	});
 }
 
 function renderViewportObjectList(): void {
+	const filtered = filterViewportObjects(
+		rightPanelSearchInput.value,
+		lastData.tracks,
+		lastData.places,
+	);
+	const emptyMessage = rightPanelSearchInput.value.trim()
+		? "No in-view places or tracks match this search."
+		: "No places or tracks are currently in view.";
+	renderObjectList("In View", filtered, emptyMessage, false);
+}
+
+function renderGlobalSearchResults(): void {
+	renderObjectList(
+		"Search Results",
+		globalSearchResults ?? { places: [], tracks: [] },
+		"No global places or tracks match this search.",
+		true,
+	);
+}
+
+function renderObjectList(
+	heading: string,
+	data: MapObjectsResponse,
+	emptyMessage: string,
+	focusOnSelect: boolean,
+): void {
 	const center = workspaceMap.getCenter();
 	const items = sortViewportObjectsByDistance(
 		{
 			latitude: center.lat,
 			longitude: center.lng,
 		},
-		lastData.tracks,
-		lastData.places,
+		data.tracks,
+		data.places,
 	);
 
 	if (items.length === 0) {
 		detailPanel.innerHTML = `
       <div class="drawer-empty">
-        No places or tracks are currently in view.
+        ${escapeHtml(emptyMessage)}
       </div>
     `;
 		return;
@@ -918,7 +1371,7 @@ function renderViewportObjectList(): void {
 
 	detailPanel.innerHTML = `
     <div class="drawer-card">
-      <h2>In View</h2>
+      <h2>${escapeHtml(heading)}</h2>
       <div class="viewport-object-list">
 		${items
 					.map(
@@ -953,23 +1406,29 @@ function renderViewportObjectList(): void {
 			const objectId = button.dataset.objectId ?? "";
 			const objectType = button.dataset.objectType;
 			if (objectType === "track") {
-				const track = lastData.tracks.find((item) => item.id === objectId);
+				const track = data.tracks.find((item) => item.id === objectId);
 				if (track) {
 					renderTrackDetail(track);
+					if (focusOnSelect) {
+						focusTrackOnMap(track);
+					}
 				}
 				return;
 			}
 			if (objectType === "place") {
-				const place = lastData.places.find((item) => item.id === objectId);
+				const place = data.places.find((item) => item.id === objectId);
 				if (place) {
 					renderPlaceDetail(place);
+					if (focusOnSelect) {
+						focusPlaceOnMap(place);
+					}
 				}
 			}
 		});
 	}
 }
 
-function syncDrawerSelection(): void {
+async function syncDrawerSelection(): Promise<void> {
 	if (pendingPlace) {
 		return;
 	}
@@ -978,32 +1437,118 @@ function syncDrawerSelection(): void {
 		return;
 	}
 	if (selectedMapObject.objectType === "track") {
-		const track = lastData.tracks.find(
-			(item) => item.id === selectedMapObject.id,
-		);
+		const track = findTrackById(selectedMapObject.id);
 		if (track) {
 			renderTrackDetail(track);
 			return;
 		}
 	}
 	if (selectedMapObject.objectType === "place") {
-		const place = lastData.places.find(
-			(item) => item.id === selectedMapObject.id,
-		);
+		const place = findPlaceById(selectedMapObject.id);
 		if (place) {
 			renderPlaceDetail(place);
 			return;
 		}
 	}
-	selectedMapObject = null;
-	updateWorkspaceSelectionSources();
+
+	if (await renderSelectedMapObjectById(selectedMapObject)) {
+		return;
+	}
+
+	clearSelectedMapObject();
 	renderViewportObjectList();
+}
+
+async function renderSelectedMapObjectById(
+	object: SelectedMapObjectState,
+): Promise<boolean> {
+	const selectedObject = await fetchSelectedMapObject(object);
+	if (selectedObject?.objectType === "track") {
+		upsertResolvedTrack(selectedObject.track);
+		renderTrackDetail(selectedObject.track);
+		return true;
+	}
+	if (selectedObject?.objectType === "place") {
+		upsertResolvedPlace(selectedObject.place);
+		renderPlaceDetail(selectedObject.place);
+		return true;
+	}
+
+	return false;
+}
+
+async function fetchSelectedMapObject(
+	object: SelectedMapObjectState,
+): Promise<
+	| { objectType: "track"; track: TrackRecord }
+	| { objectType: "place"; place: PlaceRecord }
+	| null
+> {
+	try {
+		if (object.objectType === "track") {
+			return {
+				objectType: "track",
+				track: await fetchJson<TrackRecord>(`/api/tracks/${object.id}`),
+			};
+		}
+		return {
+			objectType: "place",
+			place: await fetchJson<PlaceRecord>(`/api/places/${object.id}`),
+		};
+	} catch {
+		return null;
+	}
+}
+
+function upsertResolvedTrack(track: TrackRecord): void {
+	if (!globalSearchResults) {
+		globalSearchResults = { tracks: [], places: [] };
+	}
+	globalSearchResults.tracks = [
+		track,
+		...globalSearchResults.tracks.filter((item) => item.id !== track.id),
+	];
+}
+
+function removeResolvedTrack(trackId: string): void {
+	lastData = {
+		...lastData,
+		tracks: lastData.tracks.filter((item) => item.id !== trackId),
+	};
+	if (globalSearchResults) {
+		globalSearchResults = {
+			...globalSearchResults,
+			tracks: globalSearchResults.tracks.filter((item) => item.id !== trackId),
+		};
+	}
+}
+
+function upsertResolvedPlace(place: PlaceRecord): void {
+	if (!globalSearchResults) {
+		globalSearchResults = { tracks: [], places: [] };
+	}
+	globalSearchResults.places = [
+		place,
+		...globalSearchResults.places.filter((item) => item.id !== place.id),
+	];
+}
+
+function removeResolvedPlace(placeId: string): void {
+	lastData = {
+		...lastData,
+		places: lastData.places.filter((item) => item.id !== placeId),
+	};
+	if (globalSearchResults) {
+		globalSearchResults = {
+			...globalSearchResults,
+			places: globalSearchResults.places.filter((item) => item.id !== placeId),
+		};
+	}
 }
 
 function openPlaceDrawer(place: PendingPlaceState): void {
 	pendingPlace = place;
-	selectedMapObject = null;
-	updateWorkspaceSelectionSources();
+	clearSelectedMapObject();
 	addPlaceMode = true;
 	updateModeUi();
 	detailPanel.innerHTML = `
@@ -1027,11 +1572,11 @@ function openPlaceDrawer(place: PendingPlaceState): void {
         </label>
         <div class="field-grid two-up">
           <label>
-            Visit start
+            Stay start
             <input name="visit_start" type="datetime-local" />
           </label>
           <label>
-            Visit end
+            Stay end
             <input name="visit_end" type="datetime-local" />
           </label>
         </div>
@@ -1098,11 +1643,10 @@ function openPlaceDrawer(place: PendingPlaceState): void {
 }
 
 function openTrackEditor(track: TrackRecord, confirmDelete = false): void {
-	selectedMapObject = {
+	selectMapObject({
 		id: track.id,
 		objectType: "track",
-	};
-	updateWorkspaceSelectionSources();
+	});
 	detailPanel.innerHTML = `
     <form id="track-edit-form" class="drawer-card">
       <h2>Edit track</h2>
@@ -1167,19 +1711,21 @@ function openTrackEditor(track: TrackRecord, confirmDelete = false): void {
 			async () => {
 				await deleteJson(`/api/tracks/${track.id}`);
 				hiddenTrackIds.delete(track.id);
+				removeResolvedTrack(track.id);
+				clearSelectedMapObject();
+				updateWorkspaceOverlaySources();
+				renderViewportObjectList();
 				await refreshMapData();
-				renderDrawerEmpty();
 			},
 		);
 	}
 }
 
 function openPlaceEditor(place: PlaceRecord, confirmDelete = false): void {
-	selectedMapObject = {
+	selectMapObject({
 		id: place.id,
 		objectType: "place",
-	};
-	updateWorkspaceSelectionSources();
+	});
 	detailPanel.innerHTML = `
     <form id="place-edit-form" class="drawer-card">
       <h2>Edit place</h2>
@@ -1196,6 +1742,16 @@ function openPlaceEditor(place: PlaceRecord, confirmDelete = false): void {
           Notes
           <textarea name="notes">${escapeHtml(place.notes ?? "")}</textarea>
         </label>
+        <div class="field-grid two-up">
+          <label>
+            Stay start
+            <input name="visit_start" type="datetime-local" value="${formatDateTimeLocalValue(place.visit_start)}" />
+          </label>
+          <label>
+            Stay end
+            <input name="visit_end" type="datetime-local" value="${formatDateTimeLocalValue(place.visit_end)}" />
+          </label>
+        </div>
       </div>
       <div class="inline-actions">
         <button type="submit">Save</button>
@@ -1227,6 +1783,8 @@ function openPlaceEditor(place: PlaceRecord, confirmDelete = false): void {
 			name: String(formData.get("name") ?? "").trim(),
 			category: optionalString(formData.get("category")),
 			notes: optionalString(formData.get("notes")),
+			visit_start: toIsoOrNull(formData.get("visit_start")),
+			visit_end: toIsoOrNull(formData.get("visit_end")),
 		});
 		await refreshMapData();
 		renderPlaceDetail(updated);
@@ -1248,8 +1806,11 @@ function openPlaceEditor(place: PlaceRecord, confirmDelete = false): void {
 			"click",
 			async () => {
 				await deleteJson(`/api/places/${place.id}`);
+				removeResolvedPlace(place.id);
+				clearSelectedMapObject();
+				updateWorkspaceOverlaySources();
+				renderViewportObjectList();
 				await refreshMapData();
-				renderDrawerEmpty();
 			},
 		);
 	}
@@ -1333,15 +1894,21 @@ function renderSettings(): void {
         <button id="world-to-6" type="button" ${settingsState.isBusy || !settingsState.selectedBuildKey ? "disabled" : ""}>World to 6</button>
         <button id="rebuild-stale" class="secondary" type="button" ${settingsState.isBusy || staleCount === 0 ? "disabled" : ""}>Rebuild stale</button>
       </div>
-      <div class="status ${staleCount ? "warn" : ""}">
-        ${
-					settingsState.isBusy
-						? "Working…"
-						: staleCount
-							? `${staleCount} chunks are stale for ${escapeHtml(settingsState.selectedBuildKey || "the selected build")}.`
-							: "Managed PMTiles are current for the selected build."
-				}
-      </div>
+      <label class="toggle">
+        <input id="render-gpx-height" type="checkbox" ${renderGpxHeight ? "checked" : ""} />
+        Render GPX height
+      </label>
+      ${
+				settingsState.isBusy || staleCount
+					? `<div class="status ${staleCount ? "warn" : ""}">
+              ${
+								settingsState.isBusy
+									? "Working…"
+									: `${staleCount} chunks are stale for ${escapeHtml(settingsState.selectedBuildKey || "the selected build")}.`
+							}
+            </div>`
+					: ""
+			}
       <div class="settings-stats">
         <div class="stat-card">
           <strong>${activeJobCount}</strong>
@@ -1420,6 +1987,8 @@ function wireSettingsPanel(): void {
 		settingsContent.querySelector<HTMLButtonElement>("#world-to-6");
 	const rebuildStaleButton =
 		settingsContent.querySelector<HTMLButtonElement>("#rebuild-stale");
+	const renderGpxHeightInput =
+		settingsContent.querySelector<HTMLInputElement>("#render-gpx-height");
 	const selectAreaButton =
 		settingsContent.querySelector<HTMLButtonElement>("#select-area");
 	const clearAreaButton =
@@ -1472,6 +2041,12 @@ function wireSettingsPanel(): void {
 			});
 			await waitForMapJobs();
 		});
+	});
+
+	renderGpxHeightInput?.addEventListener("change", () => {
+		renderGpxHeight = renderGpxHeightInput.checked;
+		writeRenderGpxHeight(renderGpxHeight);
+		updateElevatedTrackExtrusions();
 	});
 
 	selectAreaButton?.addEventListener("click", () => {
@@ -1868,6 +2443,13 @@ function formatTimestamp(value: string): string {
 	return new Date(value).toLocaleString();
 }
 
+function formatCompactTimestamp(value: string): string {
+	return new Date(value).toLocaleTimeString([], {
+		hour: "2-digit",
+		minute: "2-digit",
+	});
+}
+
 function formatDistance(distanceMeters: number): string {
 	if (distanceMeters < 1000) {
 		return `${Math.round(distanceMeters)} m`;
@@ -1959,6 +2541,37 @@ function updateModeUi(): void {
 	collapsedAddPlaceButton.classList.toggle("active", addPlaceMode);
 }
 
+function findTrackById(trackId: string): TrackRecord | undefined {
+	return (
+		lastData.tracks.find((track) => track.id === trackId) ??
+		globalSearchResults?.tracks.find((track) => track.id === trackId)
+	);
+}
+
+function findPlaceById(placeId: string): PlaceRecord | undefined {
+	return (
+		lastData.places.find((place) => place.id === placeId) ??
+		globalSearchResults?.places.find((place) => place.id === placeId)
+	);
+}
+
+function focusTrackOnMap(track: TrackRecord): void {
+	workspaceMap.fitBounds(
+		[
+			[track.min_lon, track.min_lat],
+			[track.max_lon, track.max_lat],
+		],
+		{ padding: 80, maxZoom: 13 },
+	);
+}
+
+function focusPlaceOnMap(place: PlaceRecord): void {
+	workspaceMap.easeTo({
+		center: [place.longitude, place.latitude],
+		zoom: Math.max(workspaceMap.getZoom(), 12),
+	});
+}
+
 function buildTrackFeatureCollection(
 	tracks: TrackRecord[],
 ): GeoJSON.FeatureCollection {
@@ -1971,9 +2584,13 @@ function buildTrackFeatureCollection(
 				title: track.title,
 				display_color: displayTrackColor(track.id),
 			},
-			geometry: JSON.parse(track.geometry_json) as GeoJSON.Geometry,
+			geometry: parseTrackGeometry(track),
 		})),
 	};
+}
+
+function parseTrackGeometry(track: TrackRecord): GeoJSON.Geometry {
+	return JSON.parse(track.geometry_json) as GeoJSON.Geometry;
 }
 
 function buildSelectedTrackFeatureCollection(): GeoJSON.FeatureCollection {
@@ -1983,7 +2600,7 @@ function buildSelectedTrackFeatureCollection(): GeoJSON.FeatureCollection {
 	if (hiddenTrackIds.has(selectedMapObject.id)) {
 		return emptyFeatureCollection();
 	}
-	const track = lastData.tracks.find((item) => item.id === selectedMapObject.id);
+	const track = findTrackById(selectedMapObject.id);
 	if (!track) {
 		return emptyFeatureCollection();
 	}
@@ -2013,7 +2630,7 @@ function buildSelectedPlaceFeatureCollection(): GeoJSON.FeatureCollection {
 	if (!selectedMapObject || selectedMapObject.objectType !== "place") {
 		return emptyFeatureCollection();
 	}
-	const place = lastData.places.find((item) => item.id === selectedMapObject.id);
+	const place = findPlaceById(selectedMapObject.id);
 	if (!place) {
 		return emptyFeatureCollection();
 	}
@@ -2033,6 +2650,7 @@ async function applyBasemapConfig(): Promise<BasemapConfig> {
 
 async function refreshBasemapStyle(): Promise<void> {
 	const basemap = await applyBasemapConfig();
+	currentBasemapConfig = basemap;
 	await setMapStyle(
 		workspaceMap,
 		basemap.style_url ?? defaultStyle,
@@ -2045,6 +2663,7 @@ async function refreshBasemapStyle(): Promise<void> {
 			"settings",
 		);
 	}
+	scheduleMissingTilesCheck();
 }
 
 async function setMapStyle(
@@ -2153,6 +2772,15 @@ function optionalString(value: FormDataEntryValue | null): string | null {
 function toIsoOrNull(value: FormDataEntryValue | null): string | null {
 	const stringValue = typeof value === "string" ? value : "";
 	return stringValue ? new Date(stringValue).toISOString() : null;
+}
+
+function formatDateTimeLocalValue(value: string | null): string {
+	if (!value) {
+		return "";
+	}
+	const date = new Date(value);
+	const localOffsetMs = date.getTimezoneOffset() * 60 * 1000;
+	return new Date(date.getTime() - localOffsetMs).toISOString().slice(0, 16);
 }
 
 function escapeHtml(value: string): string {

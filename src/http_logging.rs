@@ -1,10 +1,10 @@
-use std::{net::SocketAddr, time::Instant};
-
 use axum::{
     extract::{ConnectInfo, Request},
     middleware::Next,
     response::Response,
 };
+use std::{net::SocketAddr, time::Instant};
+use tracing::{error, info};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RequestLogFields {
@@ -29,14 +29,13 @@ pub async fn log_http_request(request: Request, next: Next) -> Response {
     let fields = request_log_fields(&request);
     let started_at = Instant::now();
     let response = next.run(request).await;
-    tracing::info!(
+    info!(
         client_ip = %fields.client_ip,
         method = %fields.method,
         uri = %fields.uri,
         version = %fields.version,
         status = response.status().as_u16(),
-        latency_ms = started_at.elapsed().as_millis(),
-        "http request"
+        latency_ms = started_at.elapsed().as_millis(), ""
     );
     response
 }
@@ -47,6 +46,21 @@ fn forwarded_client_ip<B>(request: &Request<B>) -> Option<String> {
         let ip = value.split(',').next()?.trim();
         if !ip.is_empty() {
             return Some(ip.to_owned());
+        }
+    }
+    if let Some(value) = request.headers().get("forwarded") {
+        let value = value
+            .to_str()
+            .inspect_err(|err| error!("Failed to parse forwarded header: {}", err))
+            .ok()?;
+        for part in value.split(';') {
+            let part = part.trim();
+            if let Some(ip) = part.strip_prefix("for=") {
+                let ip = ip.trim_matches('"');
+                if !ip.is_empty() {
+                    return Some(ip.to_owned());
+                }
+            }
         }
     }
     None
