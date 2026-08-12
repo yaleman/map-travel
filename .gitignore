@@ -1,6 +1,7 @@
 /target
 /frontend/dist
 /frontend/node_modules
+/.pnpm-store
 *.sqlite
 /.playwright-cli
 /maps
