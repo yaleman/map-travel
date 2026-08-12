@@ -14,7 +14,7 @@ use pmtiles::{
 };
 use sea_orm::{
     ActiveModelTrait, ActiveValue::Set, ColumnTrait, DatabaseConnection, EntityTrait,
-    PaginatorTrait, QueryFilter, QueryOrder,
+    PaginatorTrait, QueryFilter, QueryOrder, TransactionTrait, sea_query::Expr,
 };
 use serde::{Deserialize, Serialize};
 use tokio::sync::RwLock;
@@ -545,6 +545,88 @@ impl MapsService {
         }
         model.updated_at = Set(now);
         model.update(&self.db).await?;
+        Ok(())
+    }
+
+    pub async fn retry_failed_job(&self, job_id: &str) -> AppResult<EnqueuedJobResponse> {
+        let Some(job) = map_job::Entity::find_by_id(job_id.to_owned())
+            .one(&self.db)
+            .await?
+        else {
+            return Err(AppError::InvalidRequest(
+                "map job does not exist".to_owned(),
+            ));
+        };
+        if job.status != "failed" {
+            return Err(AppError::InvalidRequest(
+                "only failed map jobs can be retried".to_owned(),
+            ));
+        }
+        if !matches!(
+            job.kind.as_str(),
+            "world-to-6" | "area-extract" | "rebuild-chunk"
+        ) {
+            return Err(AppError::InvalidRequest(
+                "map job kind cannot be retried".to_owned(),
+            ));
+        }
+        let chunk_id = job.chunk_id.clone().ok_or_else(|| {
+            AppError::InvalidRequest("failed map job has no retryable chunk".to_owned())
+        })?;
+
+        let transaction = self.db.begin().await?;
+        let claimed = map_job::Entity::update_many()
+            .filter(map_job::Column::Id.eq(job_id.to_owned()))
+            .filter(map_job::Column::Status.eq("failed"))
+            .col_expr(map_job::Column::Status, Expr::value("retrying"))
+            .exec(&transaction)
+            .await?;
+        if claimed.rows_affected != 1 {
+            return Err(AppError::Conflict(
+                "map job is already being retried".to_owned(),
+            ));
+        }
+        self.ensure_chunk_ready_for_enqueue_in(&transaction, &job.build_key, &chunk_id)
+            .await?;
+        let replacement = self
+            .enqueue_job_in(
+                &transaction,
+                &job.kind,
+                &job.build_key,
+                Some(chunk_id.clone()),
+            )
+            .await?;
+        map_job::Entity::delete_by_id(job_id.to_owned())
+            .exec(&transaction)
+            .await?;
+        transaction.commit().await?;
+        self.clear_cancel_flag(job_id).await;
+        self.spawn_job(replacement.id.clone());
+        Ok(EnqueuedJobResponse {
+            job_id: replacement.id,
+            chunk_id,
+        })
+    }
+
+    pub async fn delete_failed_job(&self, job_id: &str) -> AppResult<()> {
+        let Some(job) = map_job::Entity::find_by_id(job_id.to_owned())
+            .one(&self.db)
+            .await?
+        else {
+            return Err(AppError::InvalidRequest(
+                "map job does not exist".to_owned(),
+            ));
+        };
+        if job.status != "failed" {
+            return Err(AppError::InvalidRequest(
+                "only failed map jobs can be removed".to_owned(),
+            ));
+        }
+
+        map_job::Entity::delete_by_id(job_id.to_owned())
+            .exec(&self.db)
+            .await?;
+        self.clear_cancel_flag(job_id).await;
         Ok(())
     }
 
@@ -1161,6 +1243,17 @@ impl MapsService {
         build_key: &str,
         chunk_id: Option<String>,
     ) -> AppResult<map_job::Model> {
+        self.enqueue_job_in(&self.db, kind, build_key, chunk_id)
+            .await
+    }
+
+    async fn enqueue_job_in<C: sea_orm::ConnectionTrait>(
+        &self,
+        db: &C,
+        kind: &str,
+        build_key: &str,
+        chunk_id: Option<String>,
+    ) -> AppResult<map_job::Model> {
         let now = Utc::now();
         let job = map_job::ActiveModel {
             id: Set(Uuid::new_v4().to_string()),
@@ -1179,7 +1272,7 @@ impl MapsService {
             started_at: Set(None),
             finished_at: Set(None),
         }
-        .insert(&self.db)
+        .insert(db)
         .await?;
         self.set_cancel_flag(&job.id, false).await;
         Ok(job)
@@ -1236,12 +1329,35 @@ impl MapsService {
         build_key: &str,
         chunk_id: &str,
     ) -> AppResult<()> {
-        if self.archive_exists_for_chunk(build_key, chunk_id).await? {
+        self.ensure_chunk_ready_for_enqueue_in(&self.db, build_key, chunk_id)
+            .await
+    }
+
+    async fn ensure_chunk_ready_for_enqueue_in<C: sea_orm::ConnectionTrait>(
+        &self,
+        db: &C,
+        build_key: &str,
+        chunk_id: &str,
+    ) -> AppResult<()> {
+        if map_archive::Entity::find()
+            .filter(map_archive::Column::BuildKey.eq(build_key.to_owned()))
+            .filter(map_archive::Column::ChunkId.eq(chunk_id.to_owned()))
+            .one(db)
+            .await?
+            .is_some()
+        {
             return Err(AppError::Conflict(
                 "map segment is already downloaded for this build".to_owned(),
             ));
         }
-        if let Some(job) = self.find_active_job_for_chunk(build_key, chunk_id).await? {
+        if let Some(job) = map_job::Entity::find()
+            .filter(map_job::Column::BuildKey.eq(build_key.to_owned()))
+            .filter(map_job::Column::ChunkId.eq(chunk_id.to_owned()))
+            .filter(map_job::Column::Status.is_in(ACTIVE_JOB_STATUSES))
+            .order_by_desc(map_job::Column::CreatedAt)
+            .one(db)
+            .await?
+        {
             return Err(AppError::Conflict(format!(
                 "map job {} is already active for this segment",
                 job.id

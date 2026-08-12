@@ -94,6 +94,7 @@ Then verify:
 - GPX track names use track metadata with document metadata as a fallback, and the track drawer exposes embedded metadata
 - GPX tracks can belong to multiple collections; import preselects the active collection filter and the track editor manages the final memberships
 - collection selectors use the shared collapsed, case-insensitive searchable multi-select; map filters match any selected collection
+- failed managed-map jobs can be retried from the same build and chunk or removed from Settings
 - objects can belong to multiple collections
 - collection kinds are `trip`, `future`, `past`, and `general`
 - privacy and publishing are minimal in the current build

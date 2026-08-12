@@ -73,6 +73,8 @@ pub fn build_router(context: Arc<AppContext>) -> Router {
         crate::maps_api::get_local_maps,
         crate::maps_api::get_jobs,
         crate::maps_api::post_cancel_job,
+        crate::maps_api::post_retry_failed_job,
+        crate::maps_api::delete_failed_job,
         crate::maps_api::post_world_to_6,
         crate::maps_api::post_area_extract,
         crate::maps_api::post_active_layers,

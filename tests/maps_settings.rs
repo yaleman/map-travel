@@ -849,6 +849,7 @@ async fn cancels_running_world_job_and_rejects_duplicate_world_requests() {
 
     let jobs_response = router
         .clone()
+        .clone()
         .oneshot(
             Request::builder()
                 .uri("/api/settings/maps/jobs")
@@ -908,11 +909,16 @@ async fn keeps_failed_and_cancelled_jobs_visible_while_hiding_completed_jobs() {
     );
     let now = Utc::now().to_rfc3339();
     let insert_sql = format!(
-        "INSERT INTO map_jobs \
+        "INSERT INTO map_chunk_defs \
+         (id, label, kind, min_lon, min_lat, max_lon, max_lat, max_zoom, enabled, display_order, created_at, updated_at) \
+         VALUES \
+         ('world-to-6', 'World to 6', 'world', -180, -85, 180, 85, 6, 1, 1000, '{now}', '{now}'); \
+         INSERT INTO map_jobs \
          (id, kind, status, build_key, chunk_id, archive_id, error_message, current_step, progress_percent, segments_done, segments_total, created_at, updated_at, started_at, finished_at) \
          VALUES \
          ('completed-job', 'world-to-6', 'completed', '20260421.pmtiles', 'world-to-6', NULL, NULL, 'Completed', 100, 1, 1, '{now}', '{now}', '{now}', '{now}'), \
          ('failed-job', 'world-to-6', 'failed', '20260421.pmtiles', 'world-to-6', NULL, 'download failed', 'Failed', 50, 1, 2, '{now}', '{now}', '{now}', '{now}'), \
+         ('retryable-job', 'world-to-6', 'failed', '20260421.pmtiles', 'world-to-6', NULL, 'download failed', 'Failed', 50, 1, 2, '{now}', '{now}', '{now}', '{now}'), \
          ('cancelled-job', 'world-to-6', 'cancelled', '20260421.pmtiles', 'world-to-6', NULL, NULL, 'Cancelled', 10, 0, 2, '{now}', '{now}', '{now}', '{now}')"
     );
     context
@@ -923,6 +929,7 @@ async fn keeps_failed_and_cancelled_jobs_visible_while_hiding_completed_jobs() {
     let router = build_router(context);
 
     let jobs_response = router
+        .clone()
         .oneshot(
             Request::builder()
                 .uri("/api/settings/maps/jobs")
@@ -935,7 +942,7 @@ async fn keeps_failed_and_cancelled_jobs_visible_while_hiding_completed_jobs() {
     let jobs = jobs_payload["jobs"]
         .as_array()
         .expect("jobs should be an array");
-    assert_eq!(jobs.len(), 2);
+    assert_eq!(jobs.len(), 3);
     assert!(
         jobs.iter()
             .all(|job| job["status"].as_str() != Some("completed"))
@@ -947,6 +954,83 @@ async fn keeps_failed_and_cancelled_jobs_visible_while_hiding_completed_jobs() {
     assert!(
         jobs.iter()
             .any(|job| job["id"].as_str() == Some("cancelled-job"))
+    );
+
+    let retry_response = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/settings/maps/jobs/retryable-job/retry")
+                .body(Body::empty())
+                .expect("retry request should build"),
+        )
+        .await
+        .expect("retry request should succeed");
+    assert_eq!(retry_response.status(), StatusCode::CREATED);
+    let retry_payload = json_response(retry_response).await;
+    assert_ne!(retry_payload["job_id"], "retryable-job");
+    assert_eq!(retry_payload["chunk_id"], "world-to-6");
+    let duplicate_retry_response = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/settings/maps/jobs/retryable-job/retry")
+                .body(Body::empty())
+                .expect("duplicate retry request should build"),
+        )
+        .await
+        .expect("duplicate retry request should succeed");
+    assert_eq!(duplicate_retry_response.status(), StatusCode::BAD_REQUEST);
+    wait_for_all_jobs(&router).await;
+
+    let remove_response = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("DELETE")
+                .uri("/api/settings/maps/jobs/failed-job")
+                .body(Body::empty())
+                .expect("remove request should build"),
+        )
+        .await
+        .expect("remove request should succeed");
+    assert_eq!(remove_response.status(), StatusCode::NO_CONTENT);
+
+    let removed_jobs_response = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/api/settings/maps/jobs")
+                .body(Body::empty())
+                .expect("jobs request should build"),
+        )
+        .await
+        .expect("jobs request should succeed");
+    assert!(
+        json_response(removed_jobs_response).await["jobs"]
+            .as_array()
+            .expect("jobs should be an array")
+            .iter()
+            .all(|job| job["id"].as_str() != Some("failed-job"))
+    );
+
+    let jobs_after_retry_response = router
+        .oneshot(
+            Request::builder()
+                .uri("/api/settings/maps/jobs")
+                .body(Body::empty())
+                .expect("jobs request should build"),
+        )
+        .await
+        .expect("jobs request should succeed");
+    assert!(
+        json_response(jobs_after_retry_response).await["jobs"]
+            .as_array()
+            .expect("jobs should be an array")
+            .iter()
+            .all(|job| job["id"].as_str() != Some("retryable-job"))
     );
 
     shutdown_tx.send(()).expect("mock server should shut down");

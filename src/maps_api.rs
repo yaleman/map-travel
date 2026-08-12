@@ -31,6 +31,14 @@ pub fn build_router() -> Router<Arc<AppContext>> {
             "/api/settings/maps/jobs/{job_id}/cancel",
             post(post_cancel_job),
         )
+        .route(
+            "/api/settings/maps/jobs/{job_id}/retry",
+            post(post_retry_failed_job),
+        )
+        .route(
+            "/api/settings/maps/jobs/{job_id}",
+            axum::routing::delete(delete_failed_job),
+        )
         .route("/api/settings/maps/world-to-6", post(post_world_to_6))
         .route("/api/settings/maps/area-extract", post(post_area_extract))
         .route("/api/settings/maps/active-layers", post(post_active_layers))
@@ -168,6 +176,43 @@ pub(crate) async fn post_cancel_job(
 ) -> AppResult<StatusCode> {
     context.maps().cancel_job(&job_id).await?;
     Ok(StatusCode::OK)
+}
+
+#[utoipa::path(
+    post,
+    path = "/api/settings/maps/jobs/{job_id}/retry",
+    params(("job_id" = String, Path, description = "Failed job ID")),
+    responses(
+        (status = 201, description = "Replacement job queued", body = EnqueuedJobResponse),
+        (status = 400, description = "Invalid request", body = ErrorBody),
+        (status = 409, description = "Conflict", body = ErrorBody),
+        (status = 500, description = "Internal error", body = ErrorBody)
+    )
+)]
+pub(crate) async fn post_retry_failed_job(
+    State(context): State<Arc<AppContext>>,
+    Path(job_id): Path<String>,
+) -> AppResult<(StatusCode, Json<EnqueuedJobResponse>)> {
+    let payload = context.maps().retry_failed_job(&job_id).await?;
+    Ok((StatusCode::CREATED, Json(payload)))
+}
+
+#[utoipa::path(
+    delete,
+    path = "/api/settings/maps/jobs/{job_id}",
+    params(("job_id" = String, Path, description = "Failed job ID")),
+    responses(
+        (status = 204, description = "Failed job removed"),
+        (status = 400, description = "Invalid request", body = ErrorBody),
+        (status = 500, description = "Internal error", body = ErrorBody)
+    )
+)]
+pub(crate) async fn delete_failed_job(
+    State(context): State<Arc<AppContext>>,
+    Path(job_id): Path<String>,
+) -> AppResult<StatusCode> {
+    context.maps().delete_failed_job(&job_id).await?;
+    Ok(StatusCode::NO_CONTENT)
 }
 
 #[utoipa::path(

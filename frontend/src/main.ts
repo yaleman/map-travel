@@ -2085,6 +2085,12 @@ function wireSettingsPanel(): void {
 	const cancelJobButtons = Array.from(
 		settingsContent.querySelectorAll<HTMLButtonElement>("[data-cancel-job-id]"),
 	);
+	const retryJobButtons = Array.from(
+		settingsContent.querySelectorAll<HTMLButtonElement>("[data-retry-job-id]"),
+	);
+	const removeJobButtons = Array.from(
+		settingsContent.querySelectorAll<HTMLButtonElement>("[data-remove-job-id]"),
+	);
 
 	buildSelect?.addEventListener("change", () => {
 		settingsState.selectedBuildKey = buildSelect.value;
@@ -2201,6 +2207,27 @@ function wireSettingsPanel(): void {
 			await runManagedMapsAction(async () => {
 				await postJson(`/api/settings/maps/jobs/${jobId}/cancel`, {});
 				await waitForMapJobs();
+			});
+		});
+	}
+
+	for (const button of retryJobButtons) {
+		button.addEventListener("click", async () => {
+			const jobId = button.dataset.retryJobId;
+			if (!jobId) return;
+			await runManagedMapsAction(async () => {
+				await postJson(`/api/settings/maps/jobs/${jobId}/retry`, {});
+				await waitForMapJobs();
+			});
+		});
+	}
+
+	for (const button of removeJobButtons) {
+		button.addEventListener("click", async () => {
+			const jobId = button.dataset.removeJobId;
+			if (!jobId) return;
+			await runManagedMapsAction(async () => {
+				await deleteJson(`/api/settings/maps/jobs/${jobId}`);
 			});
 		});
 	}
@@ -2398,10 +2425,13 @@ function renderJobRow(job: MapsJobRecord): string {
         </div>
         <div class="job-row-actions">
           <strong>${job.progress_percent}%</strong>
-          ${
+		  ${
 						isJobActive(job)
 							? `<button class="secondary" type="button" data-cancel-job-id="${job.id}" ${settingsState.isBusy ? "disabled" : ""}>Cancel</button>`
-							: ""
+							: job.status === "failed"
+								? `<button class="secondary" type="button" data-retry-job-id="${job.id}" ${settingsState.isBusy ? "disabled" : ""}>Retry</button>
+                 <button class="secondary danger" type="button" data-remove-job-id="${job.id}" ${settingsState.isBusy ? "disabled" : ""}>Remove</button>`
+								: ""
 					}
         </div>
       </div>

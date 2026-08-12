@@ -153,6 +153,7 @@ The integration tests use in-memory SQLite databases built at runtime.
 - GPX import can assign every imported track to multiple collections; the active collection filter is preselected, and links can be changed from the track editor
 - collection selectors are collapsed, case-insensitive searchable multi-selects; map filters match objects in any selected collection
 - track names come from GPX track names, falling back to document metadata names; the track drawer shows saved embedded GPX metadata
+- failed managed-map jobs can be retried from the same build and chunk or removed from Settings
 
 ## Known Gaps
 
