@@ -32,6 +32,11 @@ const spriteTargets = [
 ];
 
 async function main() {
+	if (!forceRefresh && (await hasCompleteVendoredBundle())) {
+		console.log(`Using vendored basemap assets from ${path.relative(repoRoot, outputDir)}`);
+		return;
+	}
+
 	const buildKey = explicitBuildKey || (await fetchLatestBuildKey());
 	const styleUrl = protomapsStyleUrl(styleBaseUrl, buildKey);
 	const style = await fetchJson(styleUrl);
@@ -173,6 +178,34 @@ async function fileExists(filePath) {
 	} catch {
 		return false;
 	}
+}
+
+async function hasCompleteVendoredBundle() {
+	let manifest;
+	try {
+		manifest = JSON.parse(await readFile(path.join(outputDir, "manifest.json"), "utf8"));
+	} catch {
+		return false;
+	}
+
+	if (!Array.isArray(manifest.fontStacks) || !Array.isArray(manifest.glyphRanges)) {
+		return false;
+	}
+
+	const requiredFiles = [
+		"style.json",
+		"sprite.json",
+		"sprite.png",
+		"sprite@2x.json",
+		"sprite@2x.png",
+		...manifest.fontStacks.flatMap((fontStack) =>
+			manifest.glyphRanges.map((range) => path.join("fonts", fontStack, `${range}.pbf`)),
+		),
+	];
+
+	return Promise.all(requiredFiles.map((file) => fileExists(path.join(outputDir, file)))).then(
+		(results) => results.every(Boolean),
+	);
 }
 
 async function writeJson(filePath, value) {
