@@ -6,7 +6,7 @@ It currently supports:
 
 - bootstrapping a local SQLite database on first run
 - generating a stable local owner ID with no login flow
-- importing GPX tracks
+- importing GPX tracks and linking them to one or more collections
 - creating places and collections
 - filtering map objects by bounds, collection, object type, tag, and date range
 - searching places and tracks globally by name and metadata
@@ -150,6 +150,7 @@ The integration tests use in-memory SQLite databases built at runtime.
 - data is public by default in the current model
 - the UI is map-first rather than dashboard-first
 - collection kinds are currently `trip`, `future`, `past`, and `general`
+- GPX import can assign every imported track to multiple collections; the active collection filter is preselected, and links can be changed from the track editor
 
 ## Known Gaps
 

@@ -91,6 +91,7 @@ Then verify:
 - v1 is single-user with a generated stable owner ID
 - no auth flow in v1
 - GPX import is first-class
+- GPX tracks can belong to multiple collections; import preselects the active collection filter and the track editor manages the final memberships
 - objects can belong to multiple collections
 - collection kinds are `trip`, `future`, `past`, and `general`
 - privacy and publishing are minimal in the current build

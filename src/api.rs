@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use std::{collections::BTreeSet, sync::Arc};
 use std::{io::BufReader, io::Cursor};
 
 use axum::{
@@ -11,7 +11,7 @@ use chrono::{DateTime, Utc};
 use geojson::Geometry;
 use sea_orm::{
     ActiveModelTrait, ActiveValue::Set, ColumnTrait, Condition, EntityTrait, QueryFilter,
-    QuerySelect, QueryTrait, TransactionTrait,
+    QueryOrder, QuerySelect, QueryTrait, TransactionTrait,
 };
 use serde::{Deserialize, Serialize};
 use utoipa::{IntoParams, OpenApi, ToSchema};
@@ -477,29 +477,39 @@ async fn import_tracks(
 ) -> AppResult<(StatusCode, Json<ImportTracksResponse>)> {
     let mut file_bytes = None;
     let mut original_filename = None;
+    let mut collection_ids = Vec::new();
 
     while let Some(field) = multipart
         .next_field()
         .await
         .map_err(|error| AppError::InvalidRequest(format!("invalid multipart upload: {error}")))?
     {
-        if field.name() == Some("file") {
-            original_filename = field
-                .file_name()
-                .and_then(uploaded_filename_basename)
-                .map(str::to_owned);
-            file_bytes = Some(
-                field
-                    .bytes()
-                    .await
-                    .map_err(|error| {
-                        AppError::InvalidRequest(format!(
-                            "could not read uploaded GPX file: {error}"
-                        ))
-                    })?
-                    .to_vec(),
-            );
-            break;
+        match field.name() {
+            Some("file") => {
+                original_filename = field
+                    .file_name()
+                    .and_then(uploaded_filename_basename)
+                    .map(str::to_owned);
+                file_bytes = Some(
+                    field
+                        .bytes()
+                        .await
+                        .map_err(|error| {
+                            AppError::InvalidRequest(format!(
+                                "could not read uploaded GPX file: {error}"
+                            ))
+                        })?
+                        .to_vec(),
+                );
+            }
+            Some("collection_ids") => {
+                collection_ids.push(field.text().await.map_err(|error| {
+                    AppError::InvalidRequest(format!(
+                        "could not read track collection selection: {error}"
+                    ))
+                })?);
+            }
+            _ => {}
         }
     }
 
@@ -515,6 +525,9 @@ async fn import_tracks(
         ));
     }
 
+    let collection_ids = normalize_collection_ids(collection_ids);
+    let transaction = context.db().begin().await?;
+    validate_collection_ids(&transaction, context.owner_id(), &collection_ids).await?;
     let now = Utc::now();
     let mut imported = Vec::new();
 
@@ -538,11 +551,14 @@ async fn import_tracks(
             created_at: Set(now),
             updated_at: Set(now),
         }
-        .insert(context.db())
+        .insert(&transaction)
         .await?;
 
-        imported.push(TrackResponse::from_model(created));
+        replace_track_collections(&transaction, &created.id, &collection_ids, now).await?;
+        imported.push(track_response(&transaction, created).await?);
     }
+
+    transaction.commit().await?;
 
     Ok((
         StatusCode::CREATED,
@@ -588,31 +604,46 @@ struct TrackResponse {
     distance_m: Option<f64>,
     start_time: Option<DateTime<Utc>>,
     end_time: Option<DateTime<Utc>>,
+    collection_ids: Vec<String>,
 }
 
-impl TrackResponse {
-    fn from_model(model: track::Model) -> Self {
-        Self {
-            id: model.id,
-            title: model.title,
-            original_filename: model.original_filename,
-            notes: model.notes,
-            geometry_json: model.geometry_json,
-            min_lat: model.min_lat,
-            min_lon: model.min_lon,
-            max_lat: model.max_lat,
-            max_lon: model.max_lon,
-            distance_m: model.distance_m,
-            start_time: model.start_time,
-            end_time: model.end_time,
-        }
-    }
+async fn track_response<C>(connection: &C, model: track::Model) -> AppResult<TrackResponse>
+where
+    C: sea_orm::ConnectionTrait,
+{
+    let collection_ids = membership::Entity::find()
+        .filter(membership::Column::ObjectType.eq("track"))
+        .filter(membership::Column::ObjectId.eq(model.id.clone()))
+        .order_by_asc(membership::Column::CollectionId)
+        .all(connection)
+        .await?
+        .into_iter()
+        .map(|membership| membership.collection_id)
+        .collect();
+
+    Ok(TrackResponse {
+        id: model.id,
+        title: model.title,
+        original_filename: model.original_filename,
+        notes: model.notes,
+        geometry_json: model.geometry_json,
+        min_lat: model.min_lat,
+        min_lon: model.min_lon,
+        max_lat: model.max_lat,
+        max_lon: model.max_lon,
+        distance_m: model.distance_m,
+        start_time: model.start_time,
+        end_time: model.end_time,
+        collection_ids,
+    })
 }
 
 #[derive(Debug, Deserialize, ToSchema)]
 struct UpdateTrackRequest {
     title: Option<String>,
     notes: Option<String>,
+    #[serde(default)]
+    collection_ids: Vec<String>,
 }
 
 #[utoipa::path(
@@ -654,17 +685,18 @@ async fn list_map_objects(
             .collect()
     };
 
-    let tracks = if query.object_type.as_deref() == Some("place") {
+    let track_models = if query.object_type.as_deref() == Some("place") {
         Vec::new()
     } else {
         track::Entity::find()
             .filter(track_condition)
             .all(context.db())
             .await?
-            .into_iter()
-            .map(TrackResponse::from_model)
-            .collect()
     };
+    let mut tracks = Vec::with_capacity(track_models.len());
+    for model in track_models {
+        tracks.push(track_response(context.db(), model).await?);
+    }
 
     Ok(Json(MapObjectsResponse { tracks, places }))
 }
@@ -708,13 +740,14 @@ async fn search_map_objects(
         })
         .collect();
 
-    let tracks = track::Entity::find()
+    let track_models = track::Entity::find()
         .filter(search_track_condition(search))
         .all(context.db())
-        .await?
-        .into_iter()
-        .map(TrackResponse::from_model)
-        .collect();
+        .await?;
+    let mut tracks = Vec::with_capacity(track_models.len());
+    for model in track_models {
+        tracks.push(track_response(context.db(), model).await?);
+    }
 
     Ok(Json(MapObjectsResponse { tracks, places }))
 }
@@ -738,7 +771,7 @@ async fn get_track(
         .await?
         .ok_or_else(|| AppError::InvalidRequest("track does not exist".to_owned()))?;
 
-    Ok(Json(TrackResponse::from_model(model)))
+    Ok(Json(track_response(context.db(), model).await?))
 }
 
 #[utoipa::path(
@@ -757,19 +790,94 @@ async fn update_track(
     Path(track_id): Path<String>,
     Json(request): Json<UpdateTrackRequest>,
 ) -> AppResult<Json<TrackResponse>> {
+    let transaction = context.db().begin().await?;
     let existing = track::Entity::find_by_id(track_id)
-        .one(context.db())
+        .one(&transaction)
         .await?
         .ok_or_else(|| AppError::InvalidRequest("track does not exist".to_owned()))?;
 
+    let collection_ids = normalize_collection_ids(request.collection_ids);
+    validate_collection_ids(&transaction, context.owner_id(), &collection_ids).await?;
     let now = Utc::now();
     let mut model: track::ActiveModel = existing.into();
     model.title = Set(request.title.and_then(|value| trim_optional_string(&value)));
     model.notes = Set(request.notes.and_then(|value| trim_optional_string(&value)));
     model.updated_at = Set(now);
-    let updated = model.update(context.db()).await?;
+    let updated = model.update(&transaction).await?;
+    replace_track_collections(&transaction, &updated.id, &collection_ids, now).await?;
+    let response = track_response(&transaction, updated).await?;
+    transaction.commit().await?;
 
-    Ok(Json(TrackResponse::from_model(updated)))
+    Ok(Json(response))
+}
+
+fn normalize_collection_ids(collection_ids: Vec<String>) -> Vec<String> {
+    collection_ids
+        .into_iter()
+        .filter_map(|collection_id| {
+            let collection_id = collection_id.trim();
+            (!collection_id.is_empty()).then(|| collection_id.to_owned())
+        })
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect()
+}
+
+async fn validate_collection_ids<C>(
+    connection: &C,
+    owner_id: &str,
+    collection_ids: &[String],
+) -> AppResult<()>
+where
+    C: sea_orm::ConnectionTrait,
+{
+    if collection_ids.is_empty() {
+        return Ok(());
+    }
+
+    let found_count = collection::Entity::find()
+        .filter(collection::Column::OwnerId.eq(owner_id))
+        .filter(collection::Column::Id.is_in(collection_ids.iter().cloned()))
+        .all(connection)
+        .await?
+        .len();
+    if found_count != collection_ids.len() {
+        return Err(AppError::InvalidRequest(
+            "one or more collections do not exist".to_owned(),
+        ));
+    }
+
+    Ok(())
+}
+
+async fn replace_track_collections<C>(
+    connection: &C,
+    track_id: &str,
+    collection_ids: &[String],
+    now: DateTime<Utc>,
+) -> AppResult<()>
+where
+    C: sea_orm::ConnectionTrait,
+{
+    membership::Entity::delete_many()
+        .filter(membership::Column::ObjectType.eq("track"))
+        .filter(membership::Column::ObjectId.eq(track_id))
+        .exec(connection)
+        .await?;
+
+    for collection_id in collection_ids {
+        membership::ActiveModel {
+            id: Default::default(),
+            object_type: Set("track".to_owned()),
+            object_id: Set(track_id.to_owned()),
+            collection_id: Set(collection_id.clone()),
+            created_at: Set(now),
+        }
+        .insert(connection)
+        .await?;
+    }
+
+    Ok(())
 }
 
 #[utoipa::path(

@@ -66,9 +66,30 @@ async fn json_response(response: axum::response::Response) -> Value {
 }
 
 fn multipart_request(filename: &str, content_type: &str, body: &str) -> Request<Body> {
+    multipart_request_with_collection_ids(filename, content_type, body, &[])
+}
+
+fn multipart_request_with_collection_ids(
+    filename: &str,
+    content_type: &str,
+    body: &str,
+    collection_ids: &[String],
+) -> Request<Body> {
     let boundary = "X-BOUNDARY";
-    let multipart_body = format!(
+    let mut multipart_body = format!(
         "--{boundary}\r\nContent-Disposition: form-data; name=\"file\"; filename=\"{filename}\"\r\nContent-Type: {content_type}\r\n\r\n{body}\r\n--{boundary}--\r\n"
+    );
+    let collection_fields = collection_ids
+        .iter()
+        .map(|collection_id| {
+            format!(
+                "--{boundary}\r\nContent-Disposition: form-data; name=\"collection_ids\"\r\n\r\n{collection_id}\r\n"
+            )
+        })
+        .collect::<String>();
+    multipart_body = multipart_body.replace(
+        &format!("--{boundary}--\r\n"),
+        &format!("{collection_fields}--{boundary}--\r\n"),
     );
 
     Request::builder()
@@ -80,6 +101,34 @@ fn multipart_request(filename: &str, content_type: &str, body: &str) -> Request<
         )
         .body(Body::from(multipart_body))
         .expect("multipart request should build")
+}
+
+async fn create_collection(router: &axum::Router) -> String {
+    let response = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/collections")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    serde_json::json!({
+                        "name": "Track collection",
+                        "kind": "trip",
+                        "starts_at": null,
+                        "ends_at": null
+                    })
+                    .to_string(),
+                ))
+                .expect("collection request should build"),
+        )
+        .await
+        .expect("collection request should succeed");
+    assert_eq!(response.status(), StatusCode::CREATED);
+    json_response(response).await["id"]
+        .as_str()
+        .expect("collection should have an id")
+        .to_owned()
 }
 
 #[tokio::test]
@@ -161,6 +210,85 @@ async fn imports_a_gpx_track_and_makes_it_queryable_on_the_map() {
                 [170.1049, -43.7201, 1325.25]
             ]
         })
+    );
+}
+
+#[tokio::test]
+async fn assigns_imported_tracks_to_multiple_collections_and_replaces_them_on_update() {
+    let context = Arc::new(
+        AppContext::bootstrap(AppConfig::for_tests())
+            .await
+            .expect("test bootstrap should succeed"),
+    );
+    let router = build_router(context);
+    let first_collection_id = create_collection(&router).await;
+    let second_collection_id = create_collection(&router).await;
+
+    let import_response = router
+        .clone()
+        .oneshot(multipart_request_with_collection_ids(
+            "mueller-hut.gpx",
+            "application/gpx+xml",
+            SAMPLE_GPX,
+            &[first_collection_id.clone(), second_collection_id.clone()],
+        ))
+        .await
+        .expect("import request should succeed");
+    assert_eq!(import_response.status(), StatusCode::CREATED);
+    let import_json = json_response(import_response).await;
+    let track = &import_json["tracks"][0];
+    let track_id = track["id"].as_str().expect("track should have an id");
+    let mut expected_collection_ids =
+        vec![first_collection_id.clone(), second_collection_id.clone()];
+    expected_collection_ids.sort();
+    assert_eq!(
+        track["collection_ids"],
+        serde_json::json!(expected_collection_ids)
+    );
+
+    let filtered_response = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri(format!(
+                    "/api/map-objects?min_lat=-44&min_lon=169&max_lat=-43&max_lon=171&object_type=track&collection_id={second_collection_id}"
+                ))
+                .body(Body::empty())
+                .expect("filtered query should build"),
+        )
+        .await
+        .expect("filtered query should succeed");
+    assert_eq!(filtered_response.status(), StatusCode::OK);
+    assert_eq!(
+        json_response(filtered_response).await["tracks"]
+            .as_array()
+            .map(Vec::len),
+        Some(1)
+    );
+
+    let update_response = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("PATCH")
+                .uri(format!("/api/tracks/{track_id}"))
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    serde_json::json!({
+                        "title": "Updated track",
+                        "notes": null,
+                        "collection_ids": [second_collection_id]
+                    })
+                    .to_string(),
+                ))
+                .expect("update request should build"),
+        )
+        .await
+        .expect("update request should succeed");
+    assert_eq!(update_response.status(), StatusCode::OK);
+    assert_eq!(
+        json_response(update_response).await["collection_ids"],
+        serde_json::json!([second_collection_id])
     );
 }
 

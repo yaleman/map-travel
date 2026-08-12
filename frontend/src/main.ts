@@ -82,6 +82,7 @@ interface TrackRecord {
 	distance_m: number | null;
 	start_time: string | null;
 	end_time: string | null;
+	collection_ids: string[];
 }
 
 interface MapObjectsResponse {
@@ -229,6 +230,7 @@ const settingsScreen = must<HTMLElement>("#settings-screen");
 const detailPanel = must<HTMLDivElement>("#detail-panel");
 const importForm = must<HTMLFormElement>("#import-form");
 const gpxFileInput = must<HTMLInputElement>("#gpx-file");
+const importCollectionList = must<HTMLDivElement>("#import-collection-list");
 const collectionForm = must<HTMLFormElement>("#collection-form");
 const collectionNameInput = must<HTMLInputElement>("#collection-name");
 const collectionKindSelect = must<HTMLSelectElement>("#collection-kind");
@@ -578,6 +580,9 @@ function wireEventHandlers(): void {
 
 		const formData = new FormData();
 		formData.set("file", file);
+		for (const collectionId of new FormData(importForm).getAll("collection_ids")) {
+			formData.append("collection_ids", collectionId);
+		}
 		await postForm("/api/tracks/import", formData);
 		importForm.reset();
 		await refreshMapData();
@@ -603,6 +608,7 @@ function wireEventHandlers(): void {
 	});
 	filterCollection.addEventListener("change", async () => {
 		filters.collectionId = filterCollection.value;
+		renderImportCollections();
 		await refreshMapData();
 	});
 	filterTag.addEventListener("change", async () => {
@@ -835,6 +841,7 @@ function renderCollections(): void {
 		)
 		.join("")}`;
 	filterCollection.value = filters.collectionId;
+	renderImportCollections();
 
 	if (!collections.length) {
 		collectionList.innerHTML = `<div class="drawer-empty">No collections yet.</div>`;
@@ -845,6 +852,31 @@ function renderCollections(): void {
 		.map(
 			(collection) =>
 				`<span class="collection-chip">${escapeHtml(collection.name)} · ${escapeHtml(collection.kind)}</span>`,
+		)
+		.join("");
+}
+
+function renderImportCollections(): void {
+	if (!collections.length) {
+		importCollectionList.innerHTML =
+			'<div class="drawer-empty">Create a collection first if you want to group this track.</div>';
+		return;
+	}
+
+	importCollectionList.innerHTML = collectionChecklistHtml(
+		filters.collectionId ? [filters.collectionId] : [],
+	);
+}
+
+function collectionChecklistHtml(selectedCollectionIds: readonly string[]): string {
+	const selected = new Set(selectedCollectionIds);
+	return collections
+		.map(
+			(collection) => `
+        <label>
+          <input type="checkbox" name="collection_ids" value="${collection.id}"${selected.has(collection.id) ? " checked" : ""} />
+          <span>${escapeHtml(collection.name)} · ${escapeHtml(collection.kind)}</span>
+        </label>`,
 		)
 		.join("");
 }
@@ -1659,6 +1691,16 @@ function openTrackEditor(track: TrackRecord, confirmDelete = false): void {
           Notes
           <textarea name="notes">${escapeHtml(track.notes ?? "")}</textarea>
         </label>
+        <div>
+          <strong>Collections</strong>
+          <div class="checklist">
+            ${
+				collections.length
+					? collectionChecklistHtml(track.collection_ids)
+					: '<div class="drawer-empty">Create a collection first if you want to group this track.</div>'
+			}
+          </div>
+        </div>
       </div>
       <div class="inline-actions">
         <button type="submit">Save</button>
@@ -1689,6 +1731,7 @@ function openTrackEditor(track: TrackRecord, confirmDelete = false): void {
 		const updated = await patchJson<TrackRecord>(`/api/tracks/${track.id}`, {
 			title: optionalString(formData.get("title")),
 			notes: optionalString(formData.get("notes")),
+			collection_ids: formData.getAll("collection_ids"),
 		});
 		await refreshMapData();
 		renderTrackDetail(updated);
