@@ -80,6 +80,7 @@ pub mod track {
         pub owner_id: String,
         pub title: Option<String>,
         pub original_filename: Option<String>,
+        pub gpx_metadata_json: Option<String>,
         pub notes: Option<String>,
         pub geometry_json: String,
         pub min_lat: f64,

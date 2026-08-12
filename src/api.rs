@@ -109,7 +109,9 @@ pub fn build_router(context: Arc<AppContext>) -> Router {
         PlaceResponse,
         RebuildChunksResponse,
         SearchQuery,
+        GpxLinkMetadata,
         TrackResponse,
+        TrackGpxMetadata,
         UpdatePlaceRequest,
         UpdateTrackRequest,
         crate::maps_api::ActiveLayersRequest,
@@ -528,17 +530,32 @@ async fn import_tracks(
     let collection_ids = normalize_collection_ids(collection_ids);
     let transaction = context.db().begin().await?;
     validate_collection_ids(&transaction, context.owner_id(), &collection_ids).await?;
+    let file_metadata = gpx.metadata.as_ref();
     let now = Utc::now();
     let mut imported = Vec::new();
 
     for parsed_track in gpx.tracks {
         let summary = summarize_gpx_track(&parsed_track)?;
+        let gpx_metadata_json = serde_json::to_string(&track_gpx_metadata(
+            &parsed_track,
+            file_metadata,
+            gpx.creator.as_deref(),
+        ))
+        .map_err(|error| AppError::Internal(format!("could not encode GPX metadata: {error}")))?;
         let created = track::ActiveModel {
             id: Set(Uuid::new_v4().to_string()),
             owner_id: Set(context.owner_id().to_owned()),
-            title: Set(parsed_track.name.clone()),
+            title: Set(parsed_track
+                .name
+                .clone()
+                .or_else(|| file_metadata.and_then(|metadata| metadata.name.clone()))),
             original_filename: Set(original_filename.clone()),
-            notes: Set(parsed_track.description.clone()),
+            gpx_metadata_json: Set(Some(gpx_metadata_json)),
+            notes: Set(parsed_track
+                .description
+                .clone()
+                .or_else(|| parsed_track.comment.clone())
+                .or_else(|| file_metadata.and_then(|metadata| metadata.description.clone()))),
             geometry_json: Set(summary.geometry_json),
             min_lat: Set(summary.min_lat),
             min_lon: Set(summary.min_lon),
@@ -574,6 +591,7 @@ struct MapObjectsQuery {
     max_lon: f64,
     object_type: Option<String>,
     collection_id: Option<String>,
+    collection_ids: Option<String>,
     tag: Option<String>,
     starts_after: Option<DateTime<Utc>>,
     ends_before: Option<DateTime<Utc>>,
@@ -595,6 +613,7 @@ struct TrackResponse {
     id: String,
     title: Option<String>,
     original_filename: Option<String>,
+    gpx_metadata: Option<TrackGpxMetadata>,
     notes: Option<String>,
     geometry_json: String,
     min_lat: f64,
@@ -621,10 +640,18 @@ where
         .map(|membership| membership.collection_id)
         .collect();
 
+    let gpx_metadata = model
+        .gpx_metadata_json
+        .as_deref()
+        .map(serde_json::from_str)
+        .transpose()
+        .map_err(|error| AppError::Internal(format!("stored GPX metadata was invalid: {error}")))?;
+
     Ok(TrackResponse {
         id: model.id,
         title: model.title,
         original_filename: model.original_filename,
+        gpx_metadata,
         notes: model.notes,
         geometry_json: model.geometry_json,
         min_lat: model.min_lat,
@@ -636,6 +663,28 @@ where
         end_time: model.end_time,
         collection_ids,
     })
+}
+
+#[derive(Debug, Deserialize, Serialize, ToSchema)]
+struct TrackGpxMetadata {
+    file_name: Option<String>,
+    file_description: Option<String>,
+    creator: Option<String>,
+    file_time: Option<String>,
+    keywords: Option<String>,
+    author: Option<String>,
+    comment: Option<String>,
+    source: Option<String>,
+    track_type: Option<String>,
+    number: Option<u32>,
+    links: Vec<GpxLinkMetadata>,
+}
+
+#[derive(Debug, Deserialize, Serialize, ToSchema)]
+struct GpxLinkMetadata {
+    href: String,
+    text: Option<String>,
+    media_type: Option<String>,
 }
 
 #[derive(Debug, Deserialize, ToSchema)]
@@ -1041,14 +1090,15 @@ fn place_condition(query: &MapObjectsQuery) -> AppResult<Condition> {
         .add(place::Column::Latitude.lte(query.max_lat))
         .add(place_longitude_condition(query));
 
-    if let Some(collection_id) = &query.collection_id {
+    let collection_ids = query_collection_ids(query);
+    if !collection_ids.is_empty() {
         condition = condition.add(
             place::Column::Id.in_subquery(
                 membership::Entity::find()
                     .select_only()
                     .column(membership::Column::ObjectId)
                     .filter(membership::Column::ObjectType.eq("place"))
-                    .filter(membership::Column::CollectionId.eq(collection_id.clone()))
+                    .filter(membership::Column::CollectionId.is_in(collection_ids))
                     .into_query(),
             ),
         );
@@ -1104,14 +1154,15 @@ fn track_condition(query: &MapObjectsQuery) -> AppResult<Condition> {
         .add(track::Column::MaxLat.gte(query.min_lat))
         .add(track_longitude_condition(query));
 
-    if let Some(collection_id) = &query.collection_id {
+    let collection_ids = query_collection_ids(query);
+    if !collection_ids.is_empty() {
         condition = condition.add(
             track::Column::Id.in_subquery(
                 membership::Entity::find()
                     .select_only()
                     .column(membership::Column::ObjectId)
                     .filter(membership::Column::ObjectType.eq("track"))
-                    .filter(membership::Column::CollectionId.eq(collection_id.clone()))
+                    .filter(membership::Column::CollectionId.is_in(collection_ids))
                     .into_query(),
             ),
         );
@@ -1149,6 +1200,21 @@ fn track_condition(query: &MapObjectsQuery) -> AppResult<Condition> {
     Ok(condition)
 }
 
+fn query_collection_ids(query: &MapObjectsQuery) -> Vec<String> {
+    query
+        .collection_ids
+        .as_deref()
+        .map(|collection_ids| {
+            collection_ids
+                .split(',')
+                .map(str::trim)
+                .filter(|collection_id| !collection_id.is_empty())
+                .map(str::to_owned)
+                .collect()
+        })
+        .unwrap_or_else(|| query.collection_id.clone().into_iter().collect())
+}
+
 fn track_longitude_condition(query: &MapObjectsQuery) -> Condition {
     if query.min_lon <= query.max_lon {
         return Condition::all()
@@ -1179,6 +1245,41 @@ struct TrackImportSummary {
     distance_m: f64,
     start_time: Option<DateTime<Utc>>,
     end_time: Option<DateTime<Utc>>,
+}
+
+fn track_gpx_metadata(
+    parsed_track: &gpx::Track,
+    file_metadata: Option<&gpx::Metadata>,
+    creator: Option<&str>,
+) -> TrackGpxMetadata {
+    let links = file_metadata
+        .into_iter()
+        .flat_map(|metadata| metadata.links.iter())
+        .chain(parsed_track.links.iter())
+        .map(|link| GpxLinkMetadata {
+            href: link.href.clone(),
+            text: link.text.clone(),
+            media_type: link.type_.clone(),
+        })
+        .collect();
+
+    TrackGpxMetadata {
+        file_name: file_metadata.and_then(|metadata| metadata.name.clone()),
+        file_description: file_metadata.and_then(|metadata| metadata.description.clone()),
+        creator: creator.map(str::to_owned),
+        file_time: file_metadata
+            .and_then(|metadata| metadata.time)
+            .and_then(|time| time.format().ok()),
+        keywords: file_metadata.and_then(|metadata| metadata.keywords.clone()),
+        author: file_metadata
+            .and_then(|metadata| metadata.author.as_ref())
+            .and_then(|author| author.name.clone()),
+        comment: parsed_track.comment.clone(),
+        source: parsed_track.source.clone(),
+        track_type: parsed_track.type_.clone(),
+        number: parsed_track.number,
+        links,
+    }
 }
 
 fn summarize_gpx_track(parsed_track: &gpx::Track) -> AppResult<TrackImportSummary> {

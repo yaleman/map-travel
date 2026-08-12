@@ -31,10 +31,20 @@ test("imports and edits a track's collection memberships", async ({
 	const secondCollectionId = await createCollection(request, "Weekend hikes");
 
 	await page.goto("/");
-	await page.locator("#filter-collection").selectOption(firstCollectionId);
+	await page.locator("#filter-collections summary").click();
+	await page
+		.locator(`#filter-collections input[value="${firstCollectionId}"]`)
+		.check();
 	await expect(
 		page.locator(`#import-collection-list input[value="${firstCollectionId}"]`),
 	).toBeChecked();
+	await page.locator("#import-collection-list summary").click();
+	await page
+		.locator("#import-collection-list input[aria-label='Search collections']")
+		.fill("WEEKEND");
+	await expect(
+		page.locator(`#import-collection-list input[value="${firstCollectionId}"]`),
+	).toBeHidden();
 	await page
 		.locator(`#import-collection-list input[value="${secondCollectionId}"]`)
 		.check();
@@ -63,6 +73,7 @@ test("imports and edits a track's collection memberships", async ({
 		`/?selected=${trackId}#map=-27.46980,153.02510,12.00&object=track:${trackId}`,
 	);
 	await page.getByRole("button", { name: "Edit" }).click();
+	await page.locator("#track-collection-selector summary").click();
 	await expect(
 		page.locator(`#track-edit-form input[value="${firstCollectionId}"]`),
 	).toBeChecked();
@@ -84,12 +95,19 @@ test("imports and edits a track's collection memberships", async ({
 	expect(patchResponse.status()).toBe(200);
 	expect((await patchResponse.json()).collection_ids).toEqual([secondCollectionId]);
 
+	const firstFilterCheckbox = page.locator(
+		`#filter-collections input[value="${firstCollectionId}"]`,
+	);
+	if (await firstFilterCheckbox.isChecked()) {
+		await firstFilterCheckbox.uncheck();
+	}
 	const firstFilterResponse = page.waitForResponse(
 		(response) =>
 			response.url().includes("/api/map-objects") &&
-			new URL(response.url()).searchParams.get("collection_id") === firstCollectionId,
+			new URL(response.url()).searchParams.get("collection_ids") === firstCollectionId,
 	);
-	await page.locator("#filter-collection").selectOption(firstCollectionId);
+	await page.locator("#filter-collections summary").click();
+	await firstFilterCheckbox.check();
 	expect((await firstFilterResponse).status()).toBe(200);
 	const firstFiltered = await request.get(
 		`/api/map-objects?min_lat=-28&min_lon=152&max_lat=-27&max_lon=154&object_type=track&collection_id=${firstCollectionId}`,

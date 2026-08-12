@@ -42,6 +42,7 @@ import {
 	readWorkspaceSidebarCollapsed,
 	writeWorkspaceSidebarCollapsed,
 } from "./workspace-sidebar";
+import { renderCollectionMultiSelect } from "./collection-multi-select";
 import "./styles.css";
 
 type CollectionKind = "trip" | "future" | "past" | "general";
@@ -73,6 +74,7 @@ interface TrackRecord {
 	id: string;
 	title: string | null;
 	original_filename: string | null;
+	gpx_metadata: TrackGpxMetadata | null;
 	notes: string | null;
 	geometry_json: string;
 	min_lat: number;
@@ -83,6 +85,26 @@ interface TrackRecord {
 	start_time: string | null;
 	end_time: string | null;
 	collection_ids: string[];
+}
+
+interface TrackGpxMetadata {
+	file_name: string | null;
+	file_description: string | null;
+	creator: string | null;
+	file_time: string | null;
+	keywords: string | null;
+	author: string | null;
+	comment: string | null;
+	source: string | null;
+	track_type: string | null;
+	number: number | null;
+	links: GpxLinkMetadata[];
+}
+
+interface GpxLinkMetadata {
+	href: string;
+	text: string | null;
+	media_type: string | null;
 }
 
 interface MapObjectsResponse {
@@ -102,7 +124,7 @@ interface BasemapConfig {
 
 interface FiltersState {
 	objectType: "" | ObjectType;
-	collectionId: string;
+	collectionIds: string[];
 	tag: string;
 	startsAfter: string;
 	endsBefore: string;
@@ -236,7 +258,7 @@ const collectionNameInput = must<HTMLInputElement>("#collection-name");
 const collectionKindSelect = must<HTMLSelectElement>("#collection-kind");
 const collectionList = must<HTMLDivElement>("#collection-list");
 const filterObjectType = must<HTMLSelectElement>("#filter-object-type");
-const filterCollection = must<HTMLSelectElement>("#filter-collection");
+const filterCollections = must<HTMLDivElement>("#filter-collections");
 const filterTag = must<HTMLInputElement>("#filter-tag");
 const filterStartsAfter = must<HTMLInputElement>("#filter-starts-after");
 const filterEndsBefore = must<HTMLInputElement>("#filter-ends-before");
@@ -315,7 +337,7 @@ const settingsState: SettingsState = {
 
 const filters: FiltersState = {
 	objectType: "",
-	collectionId: "",
+	collectionIds: [],
 	tag: "",
 	startsAfter: "",
 	endsBefore: "",
@@ -606,11 +628,6 @@ function wireEventHandlers(): void {
 		filters.objectType = filterObjectType.value as FiltersState["objectType"];
 		await refreshMapData();
 	});
-	filterCollection.addEventListener("change", async () => {
-		filters.collectionId = filterCollection.value;
-		renderImportCollections();
-		await refreshMapData();
-	});
 	filterTag.addEventListener("change", async () => {
 		filters.tag = filterTag.value.trim();
 		await refreshMapData();
@@ -834,13 +851,17 @@ async function refreshCollections(): Promise<void> {
 }
 
 function renderCollections(): void {
-	filterCollection.innerHTML = `<option value="">All</option>${collections
-		.map(
-			(collection) =>
-				`<option value="${collection.id}">${escapeHtml(collection.name)} · ${escapeHtml(collection.kind)}</option>`,
-		)
-		.join("")}`;
-	filterCollection.value = filters.collectionId;
+	renderCollectionMultiSelect(filterCollections, {
+		collections,
+		selectedIds: filters.collectionIds,
+		inputName: "filter_collection_ids",
+		emptyMessage: "No collections yet.",
+		onChange: async (collectionIds) => {
+			filters.collectionIds = collectionIds;
+			renderImportCollections();
+			await refreshMapData();
+		},
+	});
 	renderImportCollections();
 
 	if (!collections.length) {
@@ -857,28 +878,12 @@ function renderCollections(): void {
 }
 
 function renderImportCollections(): void {
-	if (!collections.length) {
-		importCollectionList.innerHTML =
-			'<div class="drawer-empty">Create a collection first if you want to group this track.</div>';
-		return;
-	}
-
-	importCollectionList.innerHTML = collectionChecklistHtml(
-		filters.collectionId ? [filters.collectionId] : [],
-	);
-}
-
-function collectionChecklistHtml(selectedCollectionIds: readonly string[]): string {
-	const selected = new Set(selectedCollectionIds);
-	return collections
-		.map(
-			(collection) => `
-        <label>
-          <input type="checkbox" name="collection_ids" value="${collection.id}"${selected.has(collection.id) ? " checked" : ""} />
-          <span>${escapeHtml(collection.name)} · ${escapeHtml(collection.kind)}</span>
-        </label>`,
-		)
-		.join("");
+	renderCollectionMultiSelect(importCollectionList, {
+		collections,
+		selectedIds: filters.collectionIds,
+		inputName: "collection_ids",
+		emptyMessage: "Create a collection first if you want to group this track.",
+	});
 }
 
 async function refreshMapData(): Promise<void> {
@@ -898,7 +903,9 @@ async function refreshMapData(): Promise<void> {
 	});
 
 	if (filters.objectType) params.set("object_type", filters.objectType);
-	if (filters.collectionId) params.set("collection_id", filters.collectionId);
+	if (filters.collectionIds.length) {
+		params.set("collection_ids", filters.collectionIds.join(","));
+	}
 	if (filters.tag) params.set("tag", filters.tag);
 	if (filters.startsAfter)
 		params.set("starts_after", new Date(filters.startsAfter).toISOString());
@@ -1225,6 +1232,7 @@ function renderTrackDetail(track: TrackRecord): void {
       ${track.notes ? `<div>${escapeHtml(track.notes)}</div>` : ""}
       <div class="detail-list">
         ${track.original_filename ? `<div><strong>Original file</strong><br />${escapeHtml(track.original_filename)}</div>` : ""}
+        ${renderTrackGpxMetadata(track.gpx_metadata)}
         ${elevationRange ? `<div><strong>Elevation</strong><br />${escapeHtml(formatElevationRange(elevationRange))}</div>` : ""}
         <div><strong>Bounds</strong><br />${track.min_lat.toFixed(4)}, ${track.min_lon.toFixed(4)} → ${track.max_lat.toFixed(4)}, ${track.max_lon.toFixed(4)}</div>
       </div>
@@ -1250,6 +1258,43 @@ function renderTrackDetail(track: TrackRecord): void {
 			renderTrackDetail(track);
 		},
 	);
+}
+
+function renderTrackGpxMetadata(metadata: TrackGpxMetadata | null): string {
+	if (!metadata) {
+		return "";
+	}
+
+	const fields: Array<[string, string | number | null]> = [
+		["GPX name", metadata.file_name],
+		["GPX description", metadata.file_description],
+		["Creator", metadata.creator],
+		[
+			"GPX timestamp",
+			metadata.file_time ? new Date(metadata.file_time).toLocaleString() : null,
+		],
+		["Keywords", metadata.keywords],
+		["Author", metadata.author],
+		["Comment", metadata.comment],
+		["Source", metadata.source],
+		["Track type", metadata.track_type],
+		["Track number", metadata.number],
+	];
+	const renderedFields = fields
+		.filter(([, value]) => value !== null && value !== "")
+		.map(
+			([label, value]) =>
+				`<div><strong>${escapeHtml(label)}</strong><br />${escapeHtml(String(value))}</div>`,
+		)
+		.join("");
+	const renderedLinks = metadata.links
+		.map(
+			(link) =>
+				`<li><a href="${escapeHtml(link.href)}" target="_blank" rel="noreferrer">${escapeHtml(link.text ?? link.href)}</a>${link.media_type ? ` (${escapeHtml(link.media_type)})` : ""}</li>`,
+		)
+		.join("");
+
+	return `${renderedFields}${renderedLinks ? `<div><strong>GPX links</strong><ul>${renderedLinks}</ul></div>` : ""}`;
 }
 
 function renderElevationReliefMap(
@@ -1618,21 +1663,7 @@ function openPlaceDrawer(place: PendingPlaceState): void {
         </label>
         <div>
           <strong>Collections</strong>
-          <div class="checklist">
-            ${
-							collections.length
-								? collections
-										.map(
-											(collection) => `
-                      <label>
-                        <input type="checkbox" name="collection_ids" value="${collection.id}" />
-                        <span>${escapeHtml(collection.name)} · ${escapeHtml(collection.kind)}</span>
-                      </label>`,
-										)
-										.join("")
-								: `<div class="drawer-empty">Create a collection first if you want to group this place.</div>`
-						}
-          </div>
+          <div id="place-collection-selector"></div>
         </div>
       </div>
       <div class="inline-actions">
@@ -1643,6 +1674,12 @@ function openPlaceDrawer(place: PendingPlaceState): void {
   `;
 
 	const placeForm = must<HTMLFormElement>("#place-form");
+	renderCollectionMultiSelect(must("#place-collection-selector"), {
+		collections,
+		selectedIds: [],
+		inputName: "collection_ids",
+		emptyMessage: "Create a collection first if you want to group this place.",
+	});
 	const cancelButton = must<HTMLButtonElement>("#cancel-place");
 
 	placeForm.addEventListener("submit", async (event) => {
@@ -1693,13 +1730,7 @@ function openTrackEditor(track: TrackRecord, confirmDelete = false): void {
         </label>
         <div>
           <strong>Collections</strong>
-          <div class="checklist">
-            ${
-				collections.length
-					? collectionChecklistHtml(track.collection_ids)
-					: '<div class="drawer-empty">Create a collection first if you want to group this track.</div>'
-			}
-          </div>
+          <div id="track-collection-selector"></div>
         </div>
       </div>
       <div class="inline-actions">
@@ -1722,6 +1753,12 @@ function openTrackEditor(track: TrackRecord, confirmDelete = false): void {
   `;
 
 	const form = must<HTMLFormElement>("#track-edit-form");
+	renderCollectionMultiSelect(must("#track-collection-selector"), {
+		collections,
+		selectedIds: track.collection_ids,
+		inputName: "collection_ids",
+		emptyMessage: "Create a collection first if you want to group this track.",
+	});
 	const cancelButton = must<HTMLButtonElement>("#cancel-track-edit");
 	const deleteButton = must<HTMLButtonElement>("#delete-track");
 

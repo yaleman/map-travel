@@ -376,9 +376,23 @@ button.secondary.active {
 	background: rgba(255, 255, 255, 0.6);
 }
 
+.checklist label[hidden] {
+	display: none;
+}
+
 .checklist input {
 	width: auto;
 	margin: 0;
+}
+
+.collection-multi-select summary {
+	cursor: pointer;
+}
+
+.collection-multi-select-panel {
+	display: grid;
+	gap: 8px;
+	margin-top: 8px;
 }
 
 .drawer-empty {

@@ -12,8 +12,19 @@ use map_travel::{AppConfig, AppContext, build_router};
 
 const SAMPLE_GPX: &str = r#"<?xml version="1.0" encoding="UTF-8"?>
 <gpx version="1.1" creator="map-travel-test" xmlns="http://www.topografix.com/GPX/1/1">
+  <metadata>
+    <name>Mueller Hut GPX Metadata</name>
+    <desc>Imported GPX metadata description</desc>
+    <author><name>Map Travel Tester</name></author>
+    <keywords>alpine, hut</keywords>
+    <link href="https://example.com/mueller-hut"><text>Track guide</text><type>text/html</type></link>
+  </metadata>
   <trk>
     <name>Mueller Hut Track</name>
+    <cmt>Track comment</cmt>
+    <src>GPS device</src>
+    <type>hiking</type>
+    <number>7</number>
     <trkseg>
       <trkpt lat="-43.7219" lon="170.0937">
         <ele>1250.5</ele>
@@ -160,6 +171,18 @@ async fn imports_a_gpx_track_and_makes_it_queryable_on_the_map() {
     );
     assert_eq!(import_json["tracks"][0]["title"], "Mueller Hut Track");
     assert_eq!(
+        import_json["tracks"][0]["gpx_metadata"]["file_name"],
+        "Mueller Hut GPX Metadata"
+    );
+    assert_eq!(
+        import_json["tracks"][0]["gpx_metadata"]["source"],
+        "GPS device"
+    );
+    assert_eq!(
+        import_json["tracks"][0]["gpx_metadata"]["links"][0]["href"],
+        "https://example.com/mueller-hut"
+    );
+    assert_eq!(
         import_json["tracks"][0]["original_filename"],
         "mueller-hut.gpx"
     );
@@ -210,6 +233,31 @@ async fn imports_a_gpx_track_and_makes_it_queryable_on_the_map() {
                 [170.1049, -43.7201, 1325.25]
             ]
         })
+    );
+}
+
+#[tokio::test]
+async fn uses_the_gpx_metadata_name_when_a_track_has_no_name() {
+    let context = Arc::new(
+        AppContext::bootstrap(AppConfig::for_tests())
+            .await
+            .expect("test bootstrap should succeed"),
+    );
+    let router = build_router(context);
+    let nameless_gpx = SAMPLE_GPX.replace("    <name>Mueller Hut Track</name>\n", "");
+
+    let response = router
+        .oneshot(multipart_request(
+            "metadata-name.gpx",
+            "application/gpx+xml",
+            &nameless_gpx,
+        ))
+        .await
+        .expect("import request should succeed");
+    assert_eq!(response.status(), StatusCode::CREATED);
+    assert_eq!(
+        json_response(response).await["tracks"][0]["title"],
+        "Mueller Hut GPX Metadata"
     );
 }
 

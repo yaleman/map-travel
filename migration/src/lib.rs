@@ -24,6 +24,7 @@ mod m20260422_000001_create_core_tables;
 mod m20260422_000002_create_managed_maps_tables;
 mod m20260422_000003_add_map_job_progress_fields;
 mod m20260424_000004_add_track_original_filename;
+mod m20260812_000005_add_track_gpx_metadata;
 
 pub use sea_orm_migration::MigratorTrait;
 
@@ -37,6 +38,7 @@ impl MigratorTrait for Migrator {
             Box::new(m20260422_000002_create_managed_maps_tables::Migration),
             Box::new(m20260422_000003_add_map_job_progress_fields::Migration),
             Box::new(m20260424_000004_add_track_original_filename::Migration),
+            Box::new(m20260812_000005_add_track_gpx_metadata::Migration),
         ]
     }
 }

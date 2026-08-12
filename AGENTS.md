@@ -91,7 +91,9 @@ Then verify:
 - v1 is single-user with a generated stable owner ID
 - no auth flow in v1
 - GPX import is first-class
+- GPX track names use track metadata with document metadata as a fallback, and the track drawer exposes embedded metadata
 - GPX tracks can belong to multiple collections; import preselects the active collection filter and the track editor manages the final memberships
+- collection selectors use the shared collapsed, case-insensitive searchable multi-select; map filters match any selected collection
 - objects can belong to multiple collections
 - collection kinds are `trip`, `future`, `past`, and `general`
 - privacy and publishing are minimal in the current build
