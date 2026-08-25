@@ -55,7 +55,9 @@ test("updates the fragment on viewport changes and keeps hidden tracks in the ob
 			/^https:\/\/www\.google\.com\/maps\/@-?\d+\.\d+,-?\d+\.\d+,\d+\.\d+z$/,
 		);
 
-	await page.locator("#gpx-file").setInputFiles({
+	await page.locator("#open-import-dialog").click();
+	const importDialog = page.locator("#import-dialog");
+	await importDialog.locator("#gpx-file").setInputFiles({
 		name: "hideable-track.gpx",
 		mimeType: "application/gpx+xml",
 		buffer: Buffer.from(BRISBANE_TRACK_GPX),
@@ -66,7 +68,7 @@ test("updates the fragment on viewport changes and keeps hidden tracks in the ob
 				response.url().endsWith("/api/tracks/import") &&
 				response.request().method() === "POST",
 		),
-		page.getByRole("button", { name: "Import GPX" }).click(),
+		importDialog.getByRole("button", { name: "Import GPX" }).click(),
 	]);
 	expect(trackImport.status()).toBe(201);
 	const importedTrack = await trackImport.json();
@@ -469,8 +471,11 @@ test("simplifies the workspace sidebar and persists collapsed state", async ({
 	await expect(sidebar).not.toContainText("Basemap");
 	await expect(page.locator(".brand h1")).toContainText("Map Travel");
 	await expect(sections.nth(0)).toContainText("Add place");
+	await expect(sections.nth(0)).toContainText("Import GPX");
+	await expect(sections.nth(0)).toContainText("Create Collection");
 	await expect(sections.nth(0)).toContainText("Refresh");
-	await expect(sections.nth(1)).toContainText("GPX file");
+	await expect(sections.nth(1)).toContainText("Filters");
+	await expect(sidebarContent).not.toContainText("GPX file");
 
 	await page.getByRole("button", { name: "Collapse sidebar" }).click();
 	await expect(page.locator("#workspace-shell")).toHaveClass(/sidebar-collapsed/);

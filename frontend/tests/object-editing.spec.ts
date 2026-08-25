@@ -69,7 +69,9 @@ test("renames places and tracks from the drawer", async ({ page, request }) => {
 	await expect(detailPanel).toContainText("Renamed Place");
 	await expect(detailPanel).toContainText("Updated place note");
 
-	await page.locator("#gpx-file").setInputFiles({
+	await page.locator("#open-import-dialog").click();
+	const importDialog = page.locator("#import-dialog");
+	await importDialog.locator("#gpx-file").setInputFiles({
 		name: "editable-track.gpx",
 		mimeType: "application/gpx+xml",
 		buffer: Buffer.from(BRISBANE_TRACK_GPX),
@@ -80,7 +82,7 @@ test("renames places and tracks from the drawer", async ({ page, request }) => {
 				response.url().endsWith("/api/tracks/import") &&
 				response.request().method() === "POST",
 		),
-		page.getByRole("button", { name: "Import GPX" }).click(),
+		importDialog.getByRole("button", { name: "Import GPX" }).click(),
 	]);
 	expect(trackImport.status()).toBe(201);
 	const importedTrack = await trackImport.json();
@@ -149,7 +151,9 @@ test("deletes places and tracks from the edit flow after confirmation", async ({
 	expect(placeDelete.status()).toBe(204);
 	await expect(detailPanel).not.toContainText("Disposable Place");
 
-	await page.locator("#gpx-file").setInputFiles({
+	await page.locator("#open-import-dialog").click();
+	const importDialog = page.locator("#import-dialog");
+	await importDialog.locator("#gpx-file").setInputFiles({
 		name: "disposable-track.gpx",
 		mimeType: "application/gpx+xml",
 		buffer: Buffer.from(BRISBANE_TRACK_GPX),
@@ -160,7 +164,7 @@ test("deletes places and tracks from the edit flow after confirmation", async ({
 				response.url().endsWith("/api/tracks/import") &&
 				response.request().method() === "POST",
 		),
-		page.getByRole("button", { name: "Import GPX" }).click(),
+		importDialog.getByRole("button", { name: "Import GPX" }).click(),
 	]);
 	expect(trackImport.status()).toBe(201);
 	const importedTrack = await trackImport.json();

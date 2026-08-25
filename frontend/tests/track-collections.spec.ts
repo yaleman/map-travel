@@ -35,10 +35,14 @@ test("imports and edits a track's collection memberships", async ({
 	await page
 		.locator(`#filter-collections input[value="${firstCollectionId}"]`)
 		.check();
+	await page.locator("#open-import-dialog").click();
+	const importDialog = page.locator("#import-dialog");
 	await expect(
-		page.locator(`#import-collection-list input[value="${firstCollectionId}"]`),
+		importDialog.locator(
+			`#import-collection-list input[value="${firstCollectionId}"]`,
+		),
 	).toBeChecked();
-	await page.locator("#import-collection-list summary").click();
+	await importDialog.locator("#import-collection-list summary").click();
 	await page
 		.locator("#import-collection-list input[aria-label='Search collections']")
 		.fill("WEEKEND");
@@ -48,7 +52,7 @@ test("imports and edits a track's collection memberships", async ({
 	await page
 		.locator(`#import-collection-list input[value="${secondCollectionId}"]`)
 		.check();
-	await page.locator("#gpx-file").setInputFiles({
+	await importDialog.locator("#gpx-file").setInputFiles({
 		name: "collection-track.gpx",
 		mimeType: "application/gpx+xml",
 		buffer: Buffer.from(BRISBANE_TRACK_GPX),
@@ -60,7 +64,7 @@ test("imports and edits a track's collection memberships", async ({
 				response.url().endsWith("/api/tracks/import") &&
 				response.request().method() === "POST",
 		),
-		page.getByRole("button", { name: "Import GPX" }).click(),
+		importDialog.getByRole("button", { name: "Import GPX" }).click(),
 	]);
 	expect(importResponse.status()).toBe(201);
 	const importedTrack = (await importResponse.json()).tracks[0];

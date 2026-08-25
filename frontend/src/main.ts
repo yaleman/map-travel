@@ -250,13 +250,28 @@ const workspaceSidebarCollapsedTools = must<HTMLElement>(
 );
 const settingsScreen = must<HTMLElement>("#settings-screen");
 const detailPanel = must<HTMLDivElement>("#detail-panel");
+const importDialog = must<HTMLDialogElement>("#import-dialog");
+const openImportDialogButton = must<HTMLButtonElement>("#open-import-dialog");
+const cancelImportDialogButton = must<HTMLButtonElement>(
+	"#cancel-import-dialog",
+);
+const importDialogStatus = must<HTMLDivElement>("#import-dialog-status");
 const importForm = must<HTMLFormElement>("#import-form");
 const gpxFileInput = must<HTMLInputElement>("#gpx-file");
 const importCollectionList = must<HTMLDivElement>("#import-collection-list");
+const collectionDialog = must<HTMLDialogElement>("#collection-dialog");
+const openCollectionDialogButton = must<HTMLButtonElement>(
+	"#open-collection-dialog",
+);
+const cancelCollectionDialogButton = must<HTMLButtonElement>(
+	"#cancel-collection-dialog",
+);
+const collectionDialogStatus = must<HTMLDivElement>(
+	"#collection-dialog-status",
+);
 const collectionForm = must<HTMLFormElement>("#collection-form");
 const collectionNameInput = must<HTMLInputElement>("#collection-name");
 const collectionKindSelect = must<HTMLSelectElement>("#collection-kind");
-const collectionList = must<HTMLDivElement>("#collection-list");
 const filterObjectType = must<HTMLSelectElement>("#filter-object-type");
 const filterCollections = must<HTMLDivElement>("#filter-collections");
 const filterTag = must<HTMLInputElement>("#filter-tag");
@@ -592,36 +607,77 @@ function setWorkspaceSidebarCollapsed(collapsed: boolean): void {
 }
 
 function wireEventHandlers(): void {
+	openImportDialogButton.addEventListener("click", () => {
+		clearDialogStatus(importDialogStatus);
+		renderImportCollections();
+		importDialog.showModal();
+	});
+	cancelImportDialogButton.addEventListener("click", () => {
+		importDialog.close();
+	});
+	importDialog.addEventListener("close", () => {
+		importForm.reset();
+		clearDialogStatus(importDialogStatus);
+		renderImportCollections();
+	});
+
 	importForm.addEventListener("submit", async (event) => {
 		event.preventDefault();
+		clearDialogStatus(importDialogStatus);
 		const file = gpxFileInput.files?.[0];
 		if (!file) {
-			updateDrawerMessage("Choose a GPX file before importing.");
+			showDialogError(
+				importDialogStatus,
+				new Error("Choose a GPX file before importing."),
+			);
 			return;
 		}
 
-		const formData = new FormData();
-		formData.set("file", file);
-		for (const collectionId of new FormData(importForm).getAll("collection_ids")) {
-			formData.append("collection_ids", collectionId);
+		try {
+			const formData = new FormData();
+			formData.set("file", file);
+			for (const collectionId of new FormData(importForm).getAll(
+				"collection_ids",
+			)) {
+				formData.append("collection_ids", collectionId);
+			}
+			await postForm("/api/tracks/import", formData);
+			await refreshMapData();
+			importDialog.close();
+			updateDrawerMessage("GPX import complete. The track is now on the map.");
+		} catch (error) {
+			showDialogError(importDialogStatus, error);
 		}
-		await postForm("/api/tracks/import", formData);
-		importForm.reset();
-		await refreshMapData();
-		updateDrawerMessage("GPX import complete. The track is now on the map.");
+	});
+
+	openCollectionDialogButton.addEventListener("click", () => {
+		clearDialogStatus(collectionDialogStatus);
+		collectionDialog.showModal();
+	});
+	cancelCollectionDialogButton.addEventListener("click", () => {
+		collectionDialog.close();
+	});
+	collectionDialog.addEventListener("close", () => {
+		collectionForm.reset();
+		collectionKindSelect.value = "trip";
+		clearDialogStatus(collectionDialogStatus);
 	});
 
 	collectionForm.addEventListener("submit", async (event) => {
 		event.preventDefault();
-		await postJson("/api/collections", {
-			name: collectionNameInput.value.trim(),
-			kind: collectionKindSelect.value,
-			starts_at: null,
-			ends_at: null,
-		});
-		collectionForm.reset();
-		collectionKindSelect.value = "trip";
-		await refreshCollections();
+		clearDialogStatus(collectionDialogStatus);
+		try {
+			await postJson("/api/collections", {
+				name: collectionNameInput.value.trim(),
+				kind: collectionKindSelect.value,
+				starts_at: null,
+				ends_at: null,
+			});
+			await refreshCollections();
+			collectionDialog.close();
+		} catch (error) {
+			showDialogError(collectionDialogStatus, error);
+		}
 	});
 
 	filterObjectType.addEventListener("change", async () => {
@@ -863,18 +919,6 @@ function renderCollections(): void {
 		},
 	});
 	renderImportCollections();
-
-	if (!collections.length) {
-		collectionList.innerHTML = `<div class="drawer-empty">No collections yet.</div>`;
-		return;
-	}
-
-	collectionList.innerHTML = collections
-		.map(
-			(collection) =>
-				`<span class="collection-chip">${escapeHtml(collection.name)} · ${escapeHtml(collection.kind)}</span>`,
-		)
-		.join("");
 }
 
 function renderImportCollections(): void {
@@ -1204,6 +1248,17 @@ function renderDrawerEmpty(): void {
 
 function updateDrawerMessage(message: string): void {
 	detailPanel.innerHTML = `<div class="drawer-empty">${escapeHtml(message)}</div>`;
+}
+
+function clearDialogStatus(status: HTMLElement): void {
+	status.textContent = "";
+	status.hidden = true;
+}
+
+function showDialogError(status: HTMLElement, error: unknown): void {
+	status.textContent =
+		error instanceof Error ? error.message : "The request could not be completed.";
+	status.hidden = false;
 }
 
 function renderTrackDetail(track: TrackRecord): void {

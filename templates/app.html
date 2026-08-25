@@ -54,28 +54,12 @@
             <section class="section">
               <div class="inline-actions workspace-top-actions">
                 <button id="toggle-add-place" class="secondary" type="button">Add place</button>
+                <button id="open-import-dialog" class="secondary" type="button">Import GPX</button>
+                <button id="open-collection-dialog" class="secondary" type="button">
+                  Create Collection
+                </button>
                 <button id="refresh-map" class="secondary" type="button">Refresh</button>
               </div>
-            </section>
-
-            <section class="section">
-              <form id="import-form" class="field-grid">
-                <label>
-                  GPX file
-                  <input
-                    id="gpx-file"
-                    name="file"
-                    type="file"
-                    accept=".gpx,application/gpx+xml,text/xml,application/xml"
-                    required
-                  />
-                </label>
-                <div>
-                  <strong>Collections</strong>
-                  <div id="import-collection-list" class="checklist"></div>
-                </div>
-                <button type="submit">Import GPX</button>
-              </form>
             </section>
 
             <section class="section">
@@ -110,31 +94,6 @@
               </div>
             </section>
 
-            <section class="section">
-              <h2>Collections</h2>
-              <form id="collection-form" class="field-grid">
-                <label>
-                  Name
-                  <input
-                    id="collection-name"
-                    type="text"
-                    placeholder="South Island Walks"
-                    required
-                  />
-                </label>
-                <label>
-                  Kind
-                  <select id="collection-kind">
-                    <option value="trip">Trip</option>
-                    <option value="future">Future</option>
-                    <option value="past">Past</option>
-                    <option value="general">General</option>
-                  </select>
-                </label>
-                <button type="submit">Create collection</button>
-              </form>
-              <div id="collection-list" class="collection-list section-space"></div>
-            </section>
           </div>
           <button
             id="toggle-sidebar"
@@ -193,6 +152,68 @@
         </aside>
       </div>
     </section>
+
+    <dialog id="import-dialog" class="app-dialog" aria-labelledby="import-dialog-title">
+      <div class="dialog-card">
+        <h2 id="import-dialog-title">Import GPX</h2>
+        <form id="import-form" class="field-grid">
+          <label>
+            GPX file
+            <input
+              id="gpx-file"
+              name="file"
+              type="file"
+              accept=".gpx,application/gpx+xml,text/xml,application/xml"
+              required
+            />
+          </label>
+          <div>
+            <strong>Collections</strong>
+            <div id="import-collection-list" class="checklist"></div>
+          </div>
+          <div id="import-dialog-status" class="status warn" role="alert" hidden></div>
+          <div class="dialog-actions">
+            <button id="cancel-import-dialog" class="secondary" type="button">Cancel</button>
+            <button type="submit">Import GPX</button>
+          </div>
+        </form>
+      </div>
+    </dialog>
+
+    <dialog
+      id="collection-dialog"
+      class="app-dialog"
+      aria-labelledby="collection-dialog-title"
+    >
+      <div class="dialog-card">
+        <h2 id="collection-dialog-title">Create Collection</h2>
+        <form id="collection-form" class="field-grid">
+          <label>
+            Name
+            <input
+              id="collection-name"
+              type="text"
+              placeholder="South Island Walks"
+              required
+            />
+          </label>
+          <label>
+            Kind
+            <select id="collection-kind">
+              <option value="trip">Trip</option>
+              <option value="future">Future</option>
+              <option value="past">Past</option>
+              <option value="general">General</option>
+            </select>
+          </label>
+          <div id="collection-dialog-status" class="status warn" role="alert" hidden></div>
+          <div class="dialog-actions">
+            <button id="cancel-collection-dialog" class="secondary" type="button">Cancel</button>
+            <button type="submit">Create Collection</button>
+          </div>
+        </form>
+      </div>
+    </dialog>
 
     <section id="settings-screen" class="app-screen hidden">
       <div class="settings-shell">

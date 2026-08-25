@@ -24,7 +24,9 @@ const METADATA_GPX = `<?xml version="1.0" encoding="UTF-8"?>
 
 test("shows imported GPX metadata in the track drawer", async ({ page }) => {
 	await page.goto("/");
-	await page.locator("#gpx-file").setInputFiles({
+	await page.locator("#open-import-dialog").click();
+	const importDialog = page.locator("#import-dialog");
+	await importDialog.locator("#gpx-file").setInputFiles({
 		name: "metadata-track.gpx",
 		mimeType: "application/gpx+xml",
 		buffer: Buffer.from(METADATA_GPX),
@@ -35,7 +37,7 @@ test("shows imported GPX metadata in the track drawer", async ({ page }) => {
 				candidate.url().endsWith("/api/tracks/import") &&
 				candidate.request().method() === "POST",
 		),
-		page.getByRole("button", { name: "Import GPX" }).click(),
+		importDialog.getByRole("button", { name: "Import GPX" }).click(),
 	]);
 	expect(response.status()).toBe(201);
 	const trackId = (await response.json()).tracks[0].id as string;

@@ -203,7 +203,7 @@ body {
 	display: none;
 }
 
-.workspace-top-actions {
+.inline-actions.workspace-top-actions {
 	display: grid;
 	grid-template-columns: repeat(2, minmax(0, 1fr));
 }
@@ -327,6 +327,40 @@ button.secondary.active {
 	gap: 10px;
 }
 
+.app-dialog {
+	width: min(520px, calc(100vw - 32px));
+	max-height: calc(100vh - 32px);
+	padding: 0;
+	border: 1px solid var(--line);
+	border-radius: 24px;
+	background: var(--panel);
+	box-shadow: var(--shadow);
+	color: var(--ink);
+}
+
+.app-dialog::backdrop {
+	background: rgba(32, 48, 45, 0.48);
+	backdrop-filter: blur(3px);
+}
+
+.dialog-card {
+	display: grid;
+	gap: 18px;
+	padding: 24px;
+}
+
+.dialog-card h2 {
+	margin: 0;
+	font-size: 1.4rem;
+	letter-spacing: -0.03em;
+}
+
+.dialog-actions {
+	display: flex;
+	justify-content: flex-end;
+	gap: 10px;
+}
+
 .status {
 	padding: 12px 14px;
 	border-radius: 16px;
@@ -339,7 +373,6 @@ button.secondary.active {
 	color: var(--accent-dark);
 }
 
-.collection-list,
 .detail-list {
 	display: grid;
 	gap: 10px;
@@ -347,18 +380,6 @@ button.secondary.active {
 
 .section-space {
 	margin-top: 14px;
-}
-
-.collection-chip {
-	display: inline-flex;
-	align-items: center;
-	gap: 8px;
-	margin: 0 8px 8px 0;
-	padding: 8px 12px;
-	border-radius: 999px;
-	background: rgba(35, 53, 48, 0.08);
-	color: var(--ink);
-	font-size: 0.85rem;
 }
 
 .checklist {
@@ -845,7 +866,7 @@ button.secondary.active {
 		flex-direction: column;
 	}
 
-	.workspace-top-actions {
+	.inline-actions.workspace-top-actions {
 		grid-template-columns: 1fr;
 	}
 }

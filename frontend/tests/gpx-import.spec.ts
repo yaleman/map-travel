@@ -26,9 +26,11 @@ test("imports a large GPX file through the browser", async ({ page }) => {
 	expect(gpx.length).toBeGreaterThan(2_000_000);
 
 	await page.goto("/");
+	await page.locator("#open-import-dialog").click();
 
-	const upload = page.locator("#gpx-file");
-	const importButton = page.getByRole("button", { name: "Import GPX" });
+	const importDialog = page.locator("#import-dialog");
+	const upload = importDialog.locator("#gpx-file");
+	const importButton = importDialog.getByRole("button", { name: "Import GPX" });
 
 	const [response] = await Promise.all([
 		page.waitForResponse(
