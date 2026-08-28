@@ -728,6 +728,49 @@ async fn rejects_empty_global_searches() {
 }
 
 #[tokio::test]
+async fn enforces_trace_heatmap_radius_bounds() {
+    let context = Arc::new(
+        AppContext::bootstrap(AppConfig::for_tests())
+            .await
+            .expect("test bootstrap should succeed"),
+    );
+    let router = build_router(context);
+    let base_query = "/api/map-objects?min_lat=-28&min_lon=152&max_lat=-27&max_lon=154";
+
+    for radius_m in ["1", "100", "1000"] {
+        let response = router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri(format!("{base_query}&heatmap_radius_m={radius_m}"))
+                    .body(Body::empty())
+                    .expect("map objects request should build"),
+            )
+            .await
+            .expect("map objects request should succeed");
+        assert_eq!(response.status(), StatusCode::OK);
+    }
+
+    for radius_m in ["0", "1000.01"] {
+        let response = router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri(format!("{base_query}&heatmap_radius_m={radius_m}"))
+                    .body(Body::empty())
+                    .expect("map objects request should build"),
+            )
+            .await
+            .expect("map objects request should succeed");
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        assert_eq!(
+            json_response(response).await["error"],
+            "invalid request: heatmap_radius_m must be between 1 and 1000 metres"
+        );
+    }
+}
+
+#[tokio::test]
 async fn serves_openapi_schema_and_swagger_ui() {
     let context = Arc::new(
         AppContext::bootstrap(AppConfig::for_tests())

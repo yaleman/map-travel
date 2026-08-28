@@ -28,6 +28,10 @@ import {
 } from "./track-elevation";
 import { filterVisibleTracks } from "./track-visibility";
 import {
+	buildTrackHeatmapFeatureCollection,
+	metersToPixels,
+} from "./track-heatmap";
+import {
 	buildViewUrl,
 	createDebouncedViewportFragmentUpdater,
 	parseViewportFragment,
@@ -48,6 +52,7 @@ import "./styles.css";
 type CollectionKind = "trip" | "future" | "past" | "general";
 type ObjectType = "track" | "place";
 type ViewMode = "workspace" | "settings";
+type MapMode = "traces" | "heatmap";
 
 interface CollectionRecord {
 	id: string;
@@ -233,6 +238,7 @@ interface SelectedMapObjectState {
 interface MapTravelDebug {
 	elevatedTrackExtrusionStats: () => ElevatedTrackExtrusionStats;
 	hasLayer: (id: string) => boolean;
+	layerVisibility: (id: string) => string | undefined;
 }
 
 declare global {
@@ -277,6 +283,10 @@ const filterCollections = must<HTMLDivElement>("#filter-collections");
 const filterTag = must<HTMLInputElement>("#filter-tag");
 const filterStartsAfter = must<HTMLInputElement>("#filter-starts-after");
 const filterEndsBefore = must<HTMLInputElement>("#filter-ends-before");
+const mapModeSelect = must<HTMLSelectElement>("#map-mode");
+const heatmapRadiusField = must<HTMLLabelElement>("#heatmap-radius-field");
+const heatmapRadiusInput = must<HTMLInputElement>("#heatmap-radius-metres");
+const trackHeatmapLegend = must<HTMLDivElement>("#track-heatmap-legend");
 const toggleAddPlaceButton = must<HTMLButtonElement>("#toggle-add-place");
 const collapsedAddPlaceButton = must<HTMLButtonElement>("#collapsed-add-place");
 const refreshMapButton = must<HTMLButtonElement>("#refresh-map");
@@ -327,6 +337,8 @@ const hiddenTrackIds = new Set<string>();
 let currentView: ViewMode = getViewFromLocation();
 let workspaceSidebarCollapsed = readWorkspaceSidebarCollapsed();
 let renderGpxHeight = readRenderGpxHeight();
+let mapMode: MapMode = "traces";
+let heatmapRadiusMeters = 100;
 let settingsRefreshTimer: number | null = null;
 let missingTilesTimer: number | null = null;
 let missingTilesRequestSequence = 0;
@@ -401,6 +413,7 @@ async function bootstrap(): Promise<void> {
 		};
 		scheduleViewportFragmentUpdate(viewport);
 		updateGoogleMapsLink(viewport);
+		updateTrackHeatmapRadius();
 	});
 	workspaceMap.on("click", (event) => {
 		if (addPlaceMode) {
@@ -500,7 +513,16 @@ function installMapTravelDebug(): void {
 	window.__mapTravelDebug = {
 		elevatedTrackExtrusionStats: () =>
 			elevatedTrackExtrusionStats(elevatedTrackExtrusionData),
-		hasLayer: (id: string) => Boolean(workspaceMap.getLayer(id)),
+		hasLayer: (id: string) =>
+			workspaceMap.isStyleLoaded() && Boolean(workspaceMap.getLayer(id)),
+		layerVisibility: (id: string) => {
+			if (!workspaceMap.isStyleLoaded() || !workspaceMap.getLayer(id)) {
+				return undefined;
+			}
+			return String(
+				workspaceMap.getLayoutProperty(id, "visibility") ?? "visible",
+			);
+		},
 	};
 }
 
@@ -695,6 +717,22 @@ function wireEventHandlers(): void {
 	filterEndsBefore.addEventListener("change", async () => {
 		filters.endsBefore = filterEndsBefore.value;
 		await refreshMapData();
+	});
+	mapModeSelect.addEventListener("change", () => {
+		mapMode = mapModeSelect.value as MapMode;
+		applyMapMode();
+	});
+	heatmapRadiusInput.addEventListener("change", async () => {
+		if (!heatmapRadiusInput.reportValidity()) {
+			return;
+		}
+		const requestedRadiusMeters = Number(heatmapRadiusInput.value);
+		try {
+			await refreshMapData(requestedRadiusMeters);
+		} catch (error) {
+			heatmapRadiusInput.value = String(heatmapRadiusMeters);
+			console.error("Could not update trace heat map radius", error);
+		}
 	});
 
 	toggleAddPlaceButton.addEventListener("click", toggleAddPlaceMode);
@@ -930,7 +968,9 @@ function renderImportCollections(): void {
 	});
 }
 
-async function refreshMapData(): Promise<void> {
+async function refreshMapData(
+	requestedHeatmapRadiusMeters = heatmapRadiusMeters,
+): Promise<void> {
 	if (!workspaceMap || !workspaceMap.isStyleLoaded()) {
 		return;
 	}
@@ -944,6 +984,7 @@ async function refreshMapData(): Promise<void> {
 		min_lon: String(bounds.getWest()),
 		max_lat: String(bounds.getNorth()),
 		max_lon: String(bounds.getEast()),
+		heatmap_radius_m: String(requestedHeatmapRadiusMeters),
 	});
 
 	if (filters.objectType) params.set("object_type", filters.objectType);
@@ -956,9 +997,12 @@ async function refreshMapData(): Promise<void> {
 	if (filters.endsBefore)
 		params.set("ends_before", new Date(filters.endsBefore).toISOString());
 
-	lastData = await fetchJson<MapObjectsResponse>(
+	const refreshedData = await fetchJson<MapObjectsResponse>(
 		`/api/map-objects?${params.toString()}`,
 	);
+	heatmapRadiusMeters = requestedHeatmapRadiusMeters;
+	heatmapRadiusInput.value = String(heatmapRadiusMeters);
+	lastData = refreshedData;
 	updateWorkspaceOverlaySources();
 	await syncDrawerSelection();
 }
@@ -980,6 +1024,13 @@ function ensureWorkspaceOverlayLayers(): void {
 
 	if (!workspaceMap.getSource("tracks")) {
 		workspaceMap.addSource("tracks", {
+			type: "geojson",
+			data: emptyFeatureCollection(),
+		});
+	}
+
+	if (!workspaceMap.getSource("track-heatmap")) {
+		workspaceMap.addSource("track-heatmap", {
 			type: "geojson",
 			data: emptyFeatureCollection(),
 		});
@@ -1025,6 +1076,36 @@ function ensureWorkspaceOverlayLayers(): void {
 			if (track) {
 				renderTrackDetail(track);
 			}
+		});
+	}
+
+	if (!workspaceMap.getLayer("track-heatmap")) {
+		workspaceMap.addLayer({
+			id: "track-heatmap",
+			type: "heatmap",
+			source: "track-heatmap",
+			layout: { visibility: "none" },
+			paint: {
+				"heatmap-weight": ["get", "weight"],
+				"heatmap-intensity": 1,
+				"heatmap-radius": 1,
+				"heatmap-opacity": 0.86,
+				"heatmap-color": [
+					"interpolate",
+					["linear"],
+					["heatmap-density"],
+					0,
+					"rgba(63, 143, 210, 0)",
+					0.2,
+					"#3f8fd2",
+					0.5,
+					"#f2d34f",
+					0.72,
+					"#ef8a34",
+					1,
+					"#c62f2f",
+				],
+			},
 		});
 	}
 
@@ -1123,6 +1204,8 @@ function ensureWorkspaceOverlayLayers(): void {
 			},
 		});
 	}
+	applyMapMode();
+	updateTrackHeatmapRadius();
 }
 
 function ensureSettingsMapLayers(): void {
@@ -1182,6 +1265,7 @@ function ensureSettingsMapLayers(): void {
 
 function updateWorkspaceOverlaySources(): void {
 	const trackSource = workspaceMap.getSource("tracks");
+	const heatmapSource = workspaceMap.getSource("track-heatmap");
 	const placeSource = workspaceMap.getSource("places");
 	if (trackSource?.type === "geojson") {
 		trackSource.setData(
@@ -1190,11 +1274,68 @@ function updateWorkspaceOverlaySources(): void {
 			),
 		);
 	}
+	if (heatmapSource?.type === "geojson") {
+		heatmapSource.setData(
+			buildTrackHeatmapFeatureCollection(
+				lastData.tracks.map((track) => ({
+					id: track.id,
+					geometry: parseTrackGeometry(track),
+				})),
+				hiddenTrackIds,
+				heatmapRadiusMeters,
+			),
+		);
+	}
 	updateElevatedTrackExtrusions();
 	if (placeSource?.type === "geojson") {
 		placeSource.setData(buildPlaceFeatureCollection(lastData.places));
 	}
 	updateWorkspaceSelectionSources();
+}
+
+function applyMapMode(): void {
+	if (!workspaceMap?.isStyleLoaded()) {
+		return;
+	}
+	const heatmapEnabled = mapMode === "heatmap";
+	for (const layerId of [
+		"tracks-line",
+		"elevated-track-extrusions",
+		"selected-track-casing",
+		"selected-track-line",
+	]) {
+		if (workspaceMap.getLayer(layerId)) {
+			workspaceMap.setLayoutProperty(
+				layerId,
+				"visibility",
+				heatmapEnabled ? "none" : "visible",
+			);
+		}
+	}
+	if (workspaceMap.getLayer("track-heatmap")) {
+		workspaceMap.setLayoutProperty(
+			"track-heatmap",
+			"visibility",
+			heatmapEnabled ? "visible" : "none",
+		);
+	}
+	trackHeatmapLegend.hidden = !heatmapEnabled;
+	heatmapRadiusField.hidden = !heatmapEnabled;
+}
+
+function updateTrackHeatmapRadius(): void {
+	if (!workspaceMap?.getLayer("track-heatmap")) {
+		return;
+	}
+	const radius = Math.max(
+		1,
+		metersToPixels(
+			heatmapRadiusMeters,
+			workspaceMap.getZoom(),
+			workspaceMap.getCenter().lat,
+		),
+	);
+	workspaceMap.setPaintProperty("track-heatmap", "heatmap-radius", radius);
 }
 
 function updateWorkspaceSelectionSources(): void {

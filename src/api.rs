@@ -597,6 +597,7 @@ struct MapObjectsQuery {
     tag: Option<String>,
     starts_after: Option<DateTime<Utc>>,
     ends_before: Option<DateTime<Utc>>,
+    heatmap_radius_m: Option<f64>,
 }
 
 #[derive(Debug, Deserialize, IntoParams, ToSchema)]
@@ -711,6 +712,7 @@ async fn list_map_objects(
     State(context): State<Arc<AppContext>>,
     Query(query): Query<MapObjectsQuery>,
 ) -> AppResult<Json<MapObjectsResponse>> {
+    validate_heatmap_radius(query.heatmap_radius_m)?;
     let place_condition = place_condition(&query)?;
     let track_condition = track_condition(&query)?;
 
@@ -750,6 +752,16 @@ async fn list_map_objects(
     }
 
     Ok(Json(MapObjectsResponse { tracks, places }))
+}
+
+fn validate_heatmap_radius(radius_m: Option<f64>) -> AppResult<()> {
+    let radius_m = radius_m.unwrap_or(100.0);
+    if !radius_m.is_finite() || !(1.0..=1000.0).contains(&radius_m) {
+        return Err(AppError::InvalidRequest(
+            "heatmap_radius_m must be between 1 and 1000 metres".to_owned(),
+        ));
+    }
+    Ok(())
 }
 
 #[utoipa::path(

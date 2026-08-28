@@ -557,6 +557,43 @@ button.secondary.active {
 	gap: 8px;
 }
 
+.track-heatmap-legend {
+	position: absolute;
+	left: 18px;
+	bottom: 18px;
+	z-index: 2;
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	padding: 8px 10px;
+	border: 1px solid rgba(35, 53, 48, 0.12);
+	border-radius: 999px;
+	background: rgba(255, 250, 240, 0.92);
+	box-shadow: var(--shadow);
+	color: var(--muted);
+	font-size: 0.75rem;
+	font-weight: 700;
+}
+
+.heatmap-radius-field {
+	margin-top: 10px;
+}
+
+.heatmap-radius-field[hidden] {
+	display: none;
+}
+
+.track-heatmap-legend[hidden] {
+	display: none;
+}
+
+.track-heatmap-legend-ramp {
+	width: 96px;
+	height: 8px;
+	border-radius: 999px;
+	background: linear-gradient(90deg, #3f8fd2, #f2d34f, #ef8a34, #c62f2f);
+}
+
 .map-corner-chip {
 	display: inline-flex;
 	align-items: center;
