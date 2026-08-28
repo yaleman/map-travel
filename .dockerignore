@@ -1,0 +1,8 @@
+.git
+.pnpm-store
+frontend/dist
+frontend/node_modules
+maps
+output
+target
+*.sqlite

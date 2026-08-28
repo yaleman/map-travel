@@ -23,6 +23,7 @@ const maxGlyphCodePoint = Number.parseInt(
 );
 const forceRefresh = process.env.MAP_TRAVEL_VENDOR_FORCE === "1";
 const explicitBuildKey = process.env.MAP_TRAVEL_VENDOR_BUILD_KEY ?? "";
+const maximumFetchAttempts = 4;
 
 const spriteTargets = [
 	["sprite.json", ".json"],
@@ -33,7 +34,9 @@ const spriteTargets = [
 
 async function main() {
 	if (!forceRefresh && (await hasCompleteVendoredBundle())) {
-		console.log(`Using vendored basemap assets from ${path.relative(repoRoot, outputDir)}`);
+		console.log(
+			`Using vendored basemap assets from ${path.relative(repoRoot, outputDir)}`,
+		);
 		return;
 	}
 
@@ -46,14 +49,19 @@ async function main() {
 	const glyphRanges = buildGlyphRanges(maxGlyphCodePoint);
 
 	if (fontStacks.length === 0) {
-		throw new Error("no font stacks were discovered in the vendored basemap style");
+		throw new Error(
+			"no font stacks were discovered in the vendored basemap style",
+		);
 	}
 
 	await mkdir(outputDir, { recursive: true });
 	await writeJson(path.join(outputDir, "style.json"), style);
 
 	for (const [filename, suffix] of spriteTargets) {
-		await downloadFile(`${spriteBaseUrl}${suffix}`, path.join(outputDir, filename));
+		await downloadFile(
+			`${spriteBaseUrl}${suffix}`,
+			path.join(outputDir, filename),
+		);
 	}
 
 	for (const fontStack of fontStacks) {
@@ -84,7 +92,9 @@ async function main() {
 async function fetchLatestBuildKey() {
 	const payload = await fetchJson(buildsMetadataUrl);
 	if (!Array.isArray(payload) || payload.length === 0) {
-		throw new Error(`no Protomaps builds were returned from ${buildsMetadataUrl}`);
+		throw new Error(
+			`no Protomaps builds were returned from ${buildsMetadataUrl}`,
+		);
 	}
 	const sorted = [...payload].sort((left, right) => {
 		const leftUploaded = Date.parse(left.uploaded ?? "");
@@ -155,20 +165,47 @@ async function downloadFile(url, outputPath) {
 	if (!forceRefresh && (await fileExists(outputPath))) {
 		return;
 	}
-	const response = await fetch(url);
-	if (!response.ok) {
-		throw new Error(`failed to fetch ${url}: ${response.status} ${response.statusText}`);
-	}
+	const response = await fetchWithRetry(url);
 	const bytes = new Uint8Array(await response.arrayBuffer());
 	await writeFile(outputPath, bytes);
 }
 
 async function fetchJson(url) {
-	const response = await fetch(url);
-	if (!response.ok) {
-		throw new Error(`failed to fetch ${url}: ${response.status} ${response.statusText}`);
-	}
+	const response = await fetchWithRetry(url);
 	return response.json();
+}
+
+async function fetchWithRetry(url) {
+	for (let attempt = 1; attempt <= maximumFetchAttempts; attempt += 1) {
+		let response;
+		try {
+			response = await fetch(url);
+		} catch (error) {
+			if (attempt === maximumFetchAttempts) {
+				throw error;
+			}
+			await fetchRetryDelay(attempt);
+			continue;
+		}
+		if (response.ok) {
+			return response;
+		}
+		const transient =
+			response.status >= 500 ||
+			response.status === 408 ||
+			response.status === 429;
+		if (!transient || attempt === maximumFetchAttempts) {
+			throw new Error(
+				`failed to fetch ${url}: ${response.status} ${response.statusText}`,
+			);
+		}
+		await fetchRetryDelay(attempt);
+	}
+	throw new Error(`failed to fetch ${url}`);
+}
+
+async function fetchRetryDelay(attempt) {
+	await new Promise((resolve) => setTimeout(resolve, 250 * 2 ** (attempt - 1)));
 }
 
 async function fileExists(filePath) {
@@ -183,12 +220,17 @@ async function fileExists(filePath) {
 async function hasCompleteVendoredBundle() {
 	let manifest;
 	try {
-		manifest = JSON.parse(await readFile(path.join(outputDir, "manifest.json"), "utf8"));
+		manifest = JSON.parse(
+			await readFile(path.join(outputDir, "manifest.json"), "utf8"),
+		);
 	} catch {
 		return false;
 	}
 
-	if (!Array.isArray(manifest.fontStacks) || !Array.isArray(manifest.glyphRanges)) {
+	if (
+		!Array.isArray(manifest.fontStacks) ||
+		!Array.isArray(manifest.glyphRanges)
+	) {
 		return false;
 	}
 
@@ -199,13 +241,15 @@ async function hasCompleteVendoredBundle() {
 		"sprite@2x.json",
 		"sprite@2x.png",
 		...manifest.fontStacks.flatMap((fontStack) =>
-			manifest.glyphRanges.map((range) => path.join("fonts", fontStack, `${range}.pbf`)),
+			manifest.glyphRanges.map((range) =>
+				path.join("fonts", fontStack, `${range}.pbf`),
+			),
 		),
 	];
 
-	return Promise.all(requiredFiles.map((file) => fileExists(path.join(outputDir, file)))).then(
-		(results) => results.every(Boolean),
-	);
+	return Promise.all(
+		requiredFiles.map((file) => fileExists(path.join(outputDir, file))),
+	).then((results) => results.every(Boolean));
 }
 
 async function writeJson(filePath, value) {

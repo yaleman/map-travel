@@ -23,11 +23,12 @@ That frontend build also vendors the basemap style, sprite, and font assets into
 
 ## Database Rules
 
-- Use SQLite for the app database.
+- Use PostgreSQL for the app database.
 - Use `sea-orm` for database access.
 - Never use the SeaORM CLI.
 - Manage schema changes only through the migration crate in `migration/`.
-- Keep tests on in-memory SQLite databases built at runtime.
+- Production and tests use PostgreSQL through SeaORM.
+- Integration tests start disposable PostgreSQL 17 backends with `testcontainers`; Docker must be available when running the Rust test suite.
 
 ## Mapping Rules
 
@@ -85,6 +86,8 @@ Then verify:
 - `/api/basemap` returns sensible config for the current environment
 - `/api-docs/openapi.json` serves the OpenAPI schema
 - `/swagger-ui/` serves the vendored Swagger UI
+
+Container and runtime configuration changes must keep `compose.yaml`, `Dockerfile`, and `.github/workflows/build-container.yml` aligned. The application database URL is required at runtime and must come from `MAP_TRAVEL_DATABASE_URL`.
 
 ## Current Product Constraints
 

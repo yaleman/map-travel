@@ -19,7 +19,7 @@
 
 mod api;
 mod app;
-mod entities;
+pub mod entities;
 mod error;
 pub mod http_logging;
 mod maps;

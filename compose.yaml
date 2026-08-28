@@ -1,0 +1,35 @@
+services:
+  postgres:
+    image: postgres:17-bookworm
+    environment:
+      POSTGRES_DB: map_travel
+      POSTGRES_PASSWORD: ${MAP_TRAVEL_POSTGRES_PASSWORD:-development-only}
+      POSTGRES_USER: map_travel
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U map_travel -d map_travel"]
+      interval: 1s
+      timeout: 5s
+      retries: 30
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+
+  app:
+    build:
+      context: .
+      target: runtime
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      MAP_TRAVEL_DATABASE_URL: postgres://map_travel:${MAP_TRAVEL_POSTGRES_PASSWORD:-development-only}@postgres:5432/map_travel
+      MAP_TRAVEL_LISTEN_ADDR: 0.0.0.0:8080
+      MAP_TRAVEL_MANAGED_MAPS_DIR: /data/maps
+      RUST_LOG: ${RUST_LOG:-map_travel=info,tower_http=info}
+    ports:
+      - "127.0.0.1:${MAP_TRAVEL_PORT:-3000}:8080"
+    volumes:
+      - managed-maps:/data/maps
+
+volumes:
+  managed-maps:
+  postgres-data:

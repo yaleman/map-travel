@@ -4,7 +4,7 @@
 
 It currently supports:
 
-- bootstrapping a local SQLite database on first run
+- bootstrapping PostgreSQL with SeaORM migrations on startup
 - generating a stable local owner ID with no login flow
 - importing GPX tracks with embedded metadata and linking them to one or more collections
 - creating places and collections
@@ -17,7 +17,7 @@ It currently supports:
 
 ## Stack
 
-- Backend: Rust, `axum`, `sea-orm`, SQLite
+- Backend: Rust, `axum`, `sea-orm`, PostgreSQL
 - Migrations: SeaORM migration crate in `migration/`
 - Frontend: Vite, TypeScript, MapLibre GL JS
 - Tiles: Rust `pmtiles` crate on the server side
@@ -36,6 +36,7 @@ It currently supports:
 
 - Rust toolchain with `cargo`
 - `pnpm`
+- Docker for local development and integration tests
 - optionally `mise` if you want tool management via `mise.toml`
 
 ## Install Dependencies
@@ -58,21 +59,25 @@ pnpm --dir frontend build
 
 That build now vendors the basemap assets into `vendor/protomaps/` before Vite emits `frontend/dist/`.
 
-Start the server:
+Start the complete local stack:
 
 ```bash
-cargo run
+docker compose up --build
 ```
 
-By default the app listens on `127.0.0.1:3000` and uses `map-travel.sqlite` in the repo root.
-Managed PMTiles downloads are stored in `maps/` in the repo root unless overridden.
+Compose exposes the app at `http://127.0.0.1:3000`, starts PostgreSQL 17, and persists both database and managed-map data in named volumes. `MAP_TRAVEL_POSTGRES_PASSWORD` and `MAP_TRAVEL_PORT` can override the development defaults.
+
+To run the process directly, set `MAP_TRAVEL_DATABASE_URL` and build the frontend first. The process defaults to `0.0.0.0:8080` and stores managed PMTiles downloads in `maps/` unless overridden.
 
 ## Environment Variables
 
-- `MAP_TRAVEL_DATABASE_URL`: SQLite connection string
-  - default: `sqlite://map-travel.sqlite?mode=rwc`
+- `MAP_TRAVEL_DATABASE_URL`: required PostgreSQL connection string
+- `MAP_TRAVEL_DATABASE_MAX_CONNECTIONS`: maximum connections held by each process
+  - default: `16`
+- `MAP_TRAVEL_DATABASE_CONNECT_TIMEOUT_SECONDS`: PostgreSQL connection timeout
+  - default: `10`
 - `MAP_TRAVEL_LISTEN_ADDR`: bind address for the HTTP server
-  - default: `127.0.0.1:3000`
+  - default: `0.0.0.0:8080`
 - `MAP_TRAVEL_PMTILES_PATH`: optional path to a PMTiles archive
 - `MAP_TRAVEL_PMTILES_STYLE_PATH`: optional path to a MapLibre style JSON file for vector PMTiles archives
 - `MAP_TRAVEL_VENDORED_BASEMAP_DIR`: optional override for the vendored basemap asset directory
@@ -96,6 +101,8 @@ Swagger UI is available at `/swagger-ui/` and is served from vendored crate asse
 
 Current routes:
 
+- `GET /health/live`
+- `GET /health/ready`
 - `GET /api/basemap`
 - `GET /api/basemap/style.json`
 - `GET /api/basemap/tilejson.json`
@@ -141,7 +148,26 @@ Backend tests:
 cargo test
 ```
 
-The integration tests use in-memory SQLite databases built at runtime.
+The integration tests use the `testcontainers` crate to start disposable PostgreSQL 17 backends. Docker must be running.
+
+## Container images
+
+`Dockerfile` builds the frontend and Rust server into a non-root distroless runtime image. Runtime configuration is supplied through environment variables, logs go to standard output, and `SIGTERM` triggers graceful shutdown.
+
+GitHub Actions uses Docker's maintained [`github-builder`](https://github.com/docker/github-builder) workflow to build `linux/amd64` and `linux/arm64` images and publish them to `ghcr.io/yaleman/map-travel`. Every published build receives a UTC `build-YYYYMMDD-HHmmss` tag, pushes to `main` also publish `latest`, and `v*` Git tags publish their semantic version without the `v` prefix. Same-repository pull requests publish the tested image under the workflow commit SHA; fork pull requests build without publishing. Published images include provenance and an SBOM.
+
+Run the published image against any reachable PostgreSQL service and mount persistent storage for managed PMTiles:
+
+```bash
+docker run --rm \
+  --publish 127.0.0.1:8080:8080 \
+  --env MAP_TRAVEL_DATABASE_URL='postgres://USER:PASSWORD@POSTGRES_HOST:5432/map_travel' \
+  --env MAP_TRAVEL_MANAGED_MAPS_DIR=/data/maps \
+  --volume map-travel-maps:/data/maps \
+  ghcr.io/yaleman/map-travel:latest
+```
+
+The container exposes port `8080`; `/health/live` is a process liveness check and `/health/ready` verifies PostgreSQL connectivity. Orchestrators should inject the database URL as a secret and provide persistent or shared storage at the configured managed-maps directory.
 
 ## Current Behaviour
 

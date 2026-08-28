@@ -1,5 +1,3 @@
-use std::sync::Arc;
-
 use axum::{
     body::Body,
     http::{Request, StatusCode},
@@ -8,7 +6,10 @@ use http_body_util::BodyExt;
 use serde_json::Value;
 use tower::util::ServiceExt;
 
-use map_travel::{AppConfig, AppContext, build_router};
+use map_travel::build_router;
+
+mod support;
+use support::test_context;
 
 const SAMPLE_GPX: &str = r#"<?xml version="1.0" encoding="UTF-8"?>
 <gpx version="1.1" creator="map-travel-test" xmlns="http://www.topografix.com/GPX/1/1">
@@ -144,11 +145,7 @@ async fn create_collection(router: &axum::Router) -> String {
 
 #[tokio::test]
 async fn imports_a_gpx_track_and_makes_it_queryable_on_the_map() {
-    let context = Arc::new(
-        AppContext::bootstrap(AppConfig::for_tests())
-            .await
-            .expect("test bootstrap should succeed"),
-    );
+    let (_postgres, context) = test_context().await;
     let router = build_router(context);
 
     let import_response = router
@@ -238,11 +235,7 @@ async fn imports_a_gpx_track_and_makes_it_queryable_on_the_map() {
 
 #[tokio::test]
 async fn uses_the_gpx_metadata_name_when_a_track_has_no_name() {
-    let context = Arc::new(
-        AppContext::bootstrap(AppConfig::for_tests())
-            .await
-            .expect("test bootstrap should succeed"),
-    );
+    let (_postgres, context) = test_context().await;
     let router = build_router(context);
     let nameless_gpx = SAMPLE_GPX.replace("    <name>Mueller Hut Track</name>\n", "");
 
@@ -263,11 +256,7 @@ async fn uses_the_gpx_metadata_name_when_a_track_has_no_name() {
 
 #[tokio::test]
 async fn assigns_imported_tracks_to_multiple_collections_and_replaces_them_on_update() {
-    let context = Arc::new(
-        AppContext::bootstrap(AppConfig::for_tests())
-            .await
-            .expect("test bootstrap should succeed"),
-    );
+    let (_postgres, context) = test_context().await;
     let router = build_router(context);
     let first_collection_id = create_collection(&router).await;
     let second_collection_id = create_collection(&router).await;
@@ -342,11 +331,7 @@ async fn assigns_imported_tracks_to_multiple_collections_and_replaces_them_on_up
 
 #[tokio::test]
 async fn rejects_invalid_gpx_uploads_with_a_clear_client_error() {
-    let context = Arc::new(
-        AppContext::bootstrap(AppConfig::for_tests())
-            .await
-            .expect("test bootstrap should succeed"),
-    );
+    let (_postgres, context) = test_context().await;
     let router = build_router(context);
 
     let response = router
@@ -370,11 +355,7 @@ async fn rejects_invalid_gpx_uploads_with_a_clear_client_error() {
 
 #[tokio::test]
 async fn imports_large_valid_gpx_uploads() {
-    let context = Arc::new(
-        AppContext::bootstrap(AppConfig::for_tests())
-            .await
-            .expect("test bootstrap should succeed"),
-    );
+    let (_postgres, context) = test_context().await;
     let router = build_router(context);
 
     let large_gpx = large_gpx();

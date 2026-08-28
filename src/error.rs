@@ -19,6 +19,8 @@ pub enum AppError {
     InvalidRequest(String),
     #[error("internal error: {0}")]
     Internal(String),
+    #[error("service unavailable: {0}")]
+    ServiceUnavailable(String),
 }
 
 #[derive(Debug, Serialize, ToSchema)]
@@ -32,6 +34,7 @@ impl IntoResponse for AppError {
             Self::Cancelled(_) => StatusCode::CONFLICT,
             Self::Conflict(_) => StatusCode::CONFLICT,
             Self::InvalidRequest(_) => StatusCode::BAD_REQUEST,
+            Self::ServiceUnavailable(_) => StatusCode::SERVICE_UNAVAILABLE,
             Self::Database(_) | Self::Internal(_) => StatusCode::INTERNAL_SERVER_ERROR,
         };
         let body = Json(ErrorBody {

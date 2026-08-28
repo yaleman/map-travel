@@ -32,6 +32,8 @@ use crate::{
 const MAX_GPX_UPLOAD_BYTES: usize = 64 * 1024 * 1024;
 pub fn build_router(context: Arc<AppContext>) -> Router {
     Router::new()
+        .route("/health/live", get(liveness))
+        .route("/health/ready", get(readiness))
         .route("/api/collections", post(create_collection))
         .route("/api/collections", get(list_collections))
         .route("/api/places", post(create_place))
@@ -88,7 +90,9 @@ pub fn build_router(context: Arc<AppContext>) -> Router {
         crate::maps_api::get_basemap_sprite_json_hidpi,
         crate::maps_api::get_basemap_sprite_png_hidpi,
         crate::maps_api::get_missing_basemap_tiles,
-        crate::maps_api::get_basemap_tile
+        crate::maps_api::get_basemap_tile,
+        liveness,
+        readiness
     ),
     components(schemas(
         ActiveLayerUpdate,
@@ -126,6 +130,45 @@ pub fn build_router(context: Arc<AppContext>) -> Router {
     tags((name = "map-travel", description = "Map Travel API"))
 )]
 struct ApiDoc;
+
+#[derive(Serialize, ToSchema)]
+struct HealthResponse {
+    status: HealthStatus,
+}
+
+#[derive(Serialize, ToSchema)]
+#[serde(rename_all = "lowercase")]
+enum HealthStatus {
+    Ok,
+}
+
+#[utoipa::path(
+    get,
+    path = "/health/live",
+    responses((status = 200, description = "Process is running", body = HealthResponse))
+)]
+async fn liveness() -> Json<HealthResponse> {
+    Json(HealthResponse {
+        status: HealthStatus::Ok,
+    })
+}
+
+#[utoipa::path(
+    get,
+    path = "/health/ready",
+    responses(
+        (status = 200, description = "Application and database are ready", body = HealthResponse),
+        (status = 503, description = "Database is unavailable", body = ErrorBody)
+    )
+)]
+async fn readiness(State(context): State<Arc<AppContext>>) -> AppResult<Json<HealthResponse>> {
+    context.db().ping().await.map_err(|error| {
+        AppError::ServiceUnavailable(format!("database readiness check failed: {error}"))
+    })?;
+    Ok(Json(HealthResponse {
+        status: HealthStatus::Ok,
+    }))
+}
 
 #[derive(Debug, Deserialize, ToSchema)]
 struct CreateCollectionRequest {

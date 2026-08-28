@@ -22,7 +22,7 @@ use clap::Parser;
 use map_travel::{
     AppConfig, AppContext, build_router, build_ui_router, http_logging::log_http_request,
 };
-use std::{net::SocketAddr, path::PathBuf, process::ExitCode};
+use std::{net::SocketAddr, path::PathBuf, process::ExitCode, time::Duration};
 use tokio::net::TcpListener;
 use tower_http::services::ServeDir;
 use tracing_subscriber::{
@@ -33,15 +33,27 @@ use tracing_subscriber::{
 #[command(author, version, about)]
 struct Cli {
     /// Database URL
-    #[arg(
-        long,
-        env = "MAP_TRAVEL_DATABASE_URL",
-        default_value = "sqlite://map-travel.sqlite?mode=rwc"
-    )]
+    #[arg(long, env = "MAP_TRAVEL_DATABASE_URL", hide_env_values = true)]
     database_url: String,
 
+    /// Maximum PostgreSQL connections held by this process
+    #[arg(
+        long,
+        env = "MAP_TRAVEL_DATABASE_MAX_CONNECTIONS",
+        default_value_t = 16
+    )]
+    database_max_connections: u32,
+
+    /// PostgreSQL connection timeout in seconds
+    #[arg(
+        long,
+        env = "MAP_TRAVEL_DATABASE_CONNECT_TIMEOUT_SECONDS",
+        default_value_t = 10
+    )]
+    database_connect_timeout_seconds: u64,
+
     /// Listen address
-    #[arg(long, env = "MAP_TRAVEL_LISTEN_ADDR", default_value = "127.0.0.1:3000")]
+    #[arg(long, env = "MAP_TRAVEL_LISTEN_ADDR", default_value = "0.0.0.0:8080")]
     listen_addr: SocketAddr,
 
     /// Path to PMTiles file
@@ -104,6 +116,8 @@ async fn main() -> Result<ExitCode, ExitCode> {
 
     let config = AppConfig {
         database_url: cli.database_url,
+        database_max_connections: cli.database_max_connections,
+        database_connect_timeout: Duration::from_secs(cli.database_connect_timeout_seconds),
         listen_addr: cli.listen_addr,
         pmtiles_path: cli.pmtiles_path,
         pmtiles_style_path: cli.pmtiles_style_path,
@@ -133,12 +147,40 @@ async fn main() -> Result<ExitCode, ExitCode> {
         listener,
         app.into_make_service_with_connect_info::<SocketAddr>(),
     )
+    .with_graceful_shutdown(shutdown_signal())
     .await
     .map_err(|error| {
         eprintln!("Server error: {error}");
         ExitCode::FAILURE
     })?;
     Ok(ExitCode::SUCCESS)
+}
+
+async fn shutdown_signal() {
+    let ctrl_c = async {
+        if let Err(error) = tokio::signal::ctrl_c().await {
+            tracing::error!(%error, "failed to install Ctrl+C handler");
+        }
+    };
+
+    #[cfg(unix)]
+    let terminate = async {
+        match tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()) {
+            Ok(mut signal) => {
+                signal.recv().await;
+            }
+            Err(error) => tracing::error!(%error, "failed to install SIGTERM handler"),
+        }
+    };
+
+    #[cfg(not(unix))]
+    let terminate = std::future::pending::<()>();
+
+    tokio::select! {
+        () = ctrl_c => {},
+        () = terminate => {},
+    }
+    tracing::info!("shutdown signal received");
 }
 
 fn build_env_filter() -> Result<EnvFilter, tracing_subscriber::filter::ParseError> {

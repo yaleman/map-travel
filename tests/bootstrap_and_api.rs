@@ -1,5 +1,3 @@
-use std::sync::Arc;
-
 use axum::{
     body::Body,
     http::{Request, StatusCode},
@@ -10,6 +8,9 @@ use tempfile::TempDir;
 use tower::util::ServiceExt;
 
 use map_travel::{AppConfig, AppContext, build_router, build_ui_router};
+
+mod support;
+use support::{TestPostgres, test_context};
 
 const SAMPLE_GPX: &str = r#"<?xml version="1.0" encoding="UTF-8"?>
 <gpx version="1.1" creator="map-travel-test" xmlns="http://www.topografix.com/GPX/1/1">
@@ -67,10 +68,12 @@ fn multipart_request(filename: &str, content_type: &str, body: &str) -> Request<
 #[tokio::test]
 async fn bootstrap_creates_and_reuses_owner_id_for_same_database() {
     let temp_dir = TempDir::new().expect("temp dir should be created");
-    let database_path = temp_dir.path().join("map-travel.sqlite");
+    let postgres = TestPostgres::start().await;
 
     let first_context = AppContext::bootstrap(AppConfig {
-        database_url: format!("sqlite:{}?mode=rwc", database_path.display()),
+        database_url: postgres.database_url().to_owned(),
+        database_max_connections: 4,
+        database_connect_timeout: std::time::Duration::from_secs(10),
         listen_addr: "127.0.0.1:0".parse().expect("valid socket address"),
         pmtiles_path: None,
         pmtiles_style_path: None,
@@ -87,7 +90,9 @@ async fn bootstrap_creates_and_reuses_owner_id_for_same_database() {
     drop(first_context);
 
     let second_context = AppContext::bootstrap(AppConfig {
-        database_url: format!("sqlite:{}?mode=rwc", database_path.display()),
+        database_url: postgres.database_url().to_owned(),
+        database_max_connections: 4,
+        database_connect_timeout: std::time::Duration::from_secs(10),
         listen_addr: "127.0.0.1:0".parse().expect("valid socket address"),
         pmtiles_path: None,
         pmtiles_style_path: None,
@@ -132,12 +137,29 @@ async fn serves_the_app_shell_from_askama_templates() {
 }
 
 #[tokio::test]
-async fn creates_places_and_filters_them_by_bounds_collection_and_type() {
-    let context = Arc::new(
-        AppContext::bootstrap(AppConfig::for_tests())
+async fn reports_live_and_ready_with_a_reachable_database() {
+    let (_postgres, context) = test_context().await;
+    let router = build_router(context);
+
+    for path in ["/health/live", "/health/ready"] {
+        let response = router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri(path)
+                    .body(Body::empty())
+                    .expect("health request should build"),
+            )
             .await
-            .expect("test bootstrap should succeed"),
-    );
+            .expect("health request should succeed");
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(json_response(response).await, json!({ "status": "ok" }));
+    }
+}
+
+#[tokio::test]
+async fn creates_places_and_filters_them_by_bounds_collection_and_type() {
+    let (_postgres, context) = test_context().await;
     let router = build_router(context.clone());
 
     let collection_request = Request::builder()
@@ -258,11 +280,7 @@ async fn creates_places_and_filters_them_by_bounds_collection_and_type() {
 
 #[tokio::test]
 async fn updates_selected_place_fields() {
-    let context = Arc::new(
-        AppContext::bootstrap(AppConfig::for_tests())
-            .await
-            .expect("test bootstrap should succeed"),
-    );
+    let (_postgres, context) = test_context().await;
     let router = build_router(context);
 
     let create_response = router
@@ -341,11 +359,7 @@ async fn updates_selected_place_fields() {
 
 #[tokio::test]
 async fn updates_imported_track_fields() {
-    let context = Arc::new(
-        AppContext::bootstrap(AppConfig::for_tests())
-            .await
-            .expect("test bootstrap should succeed"),
-    );
+    let (_postgres, context) = test_context().await;
     let router = build_router(context);
 
     let import_response = router
@@ -409,11 +423,7 @@ async fn updates_imported_track_fields() {
 
 #[tokio::test]
 async fn deletes_places_and_removes_them_from_view_queries() {
-    let context = Arc::new(
-        AppContext::bootstrap(AppConfig::for_tests())
-            .await
-            .expect("test bootstrap should succeed"),
-    );
+    let (_postgres, context) = test_context().await;
     let router = build_router(context);
 
     let collection_response = router
@@ -503,11 +513,7 @@ async fn deletes_places_and_removes_them_from_view_queries() {
 
 #[tokio::test]
 async fn deletes_tracks_and_removes_them_from_view_queries() {
-    let context = Arc::new(
-        AppContext::bootstrap(AppConfig::for_tests())
-            .await
-            .expect("test bootstrap should succeed"),
-    );
+    let (_postgres, context) = test_context().await;
     let router = build_router(context);
 
     let import_response = router
@@ -559,11 +565,7 @@ async fn deletes_tracks_and_removes_them_from_view_queries() {
 
 #[tokio::test]
 async fn searches_places_and_tracks_globally_by_metadata() {
-    let context = Arc::new(
-        AppContext::bootstrap(AppConfig::for_tests())
-            .await
-            .expect("test bootstrap should succeed"),
-    );
+    let (_postgres, context) = test_context().await;
     let router = build_router(context);
 
     let collection_response = router
@@ -707,11 +709,7 @@ async fn searches_places_and_tracks_globally_by_metadata() {
 
 #[tokio::test]
 async fn rejects_empty_global_searches() {
-    let context = Arc::new(
-        AppContext::bootstrap(AppConfig::for_tests())
-            .await
-            .expect("test bootstrap should succeed"),
-    );
+    let (_postgres, context) = test_context().await;
     let router = build_router(context);
 
     let response = router
@@ -729,11 +727,7 @@ async fn rejects_empty_global_searches() {
 
 #[tokio::test]
 async fn enforces_trace_heatmap_radius_bounds() {
-    let context = Arc::new(
-        AppContext::bootstrap(AppConfig::for_tests())
-            .await
-            .expect("test bootstrap should succeed"),
-    );
+    let (_postgres, context) = test_context().await;
     let router = build_router(context);
     let base_query = "/api/map-objects?min_lat=-28&min_lon=152&max_lat=-27&max_lon=154";
 
@@ -772,11 +766,7 @@ async fn enforces_trace_heatmap_radius_bounds() {
 
 #[tokio::test]
 async fn serves_openapi_schema_and_swagger_ui() {
-    let context = Arc::new(
-        AppContext::bootstrap(AppConfig::for_tests())
-            .await
-            .expect("test bootstrap should succeed"),
-    );
+    let (_postgres, context) = test_context().await;
     let router = build_router(context);
 
     let schema_response = router

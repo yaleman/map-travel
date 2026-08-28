@@ -13,13 +13,19 @@ use axum::{
 use chrono::Utc;
 use http_body_util::BodyExt;
 use pmtiles::{PmTilesWriter, TileCoord, TileType};
-use sea_orm::ConnectionTrait;
+use sea_orm::{ActiveModelTrait, ActiveValue::Set, EntityTrait};
 use serde_json::{Value, json};
 use tempfile::TempDir;
 use tokio::{net::TcpListener, sync::oneshot};
 use tower::util::ServiceExt;
 
-use map_travel::{AppConfig, AppContext, build_router};
+use map_travel::{
+    AppConfig, AppContext, build_router,
+    entities::{map_chunk, map_job},
+};
+
+mod support;
+use support::TestPostgres;
 
 #[derive(Clone)]
 struct MockBuild {
@@ -215,13 +221,12 @@ fn create_source_pmtiles(path: &Path, region_tile: &[u8], coarse_tile: &[u8]) ->
     std::fs::read(path).expect("pmtiles file should be readable")
 }
 
-fn app_config(temp_dir: &TempDir, base_url: &str) -> AppConfig {
+fn app_config(temp_dir: &TempDir, base_url: &str, database_url: &str) -> AppConfig {
     create_vendored_basemap_assets(&temp_dir.path().join("vendored-basemap"));
     AppConfig {
-        database_url: format!(
-            "sqlite:{}?mode=rwc",
-            temp_dir.path().join("map-travel.sqlite").display()
-        ),
+        database_url: database_url.to_owned(),
+        database_max_connections: 4,
+        database_connect_timeout: std::time::Duration::from_secs(10),
         listen_addr: "127.0.0.1:0".parse().expect("listen addr should parse"),
         pmtiles_path: None,
         pmtiles_style_path: None,
@@ -313,9 +318,37 @@ async fn post_json(router: &Router, uri: &str, body: Value) -> axum::response::R
         .expect("request should succeed")
 }
 
+fn map_job_model(
+    id: &str,
+    status: &str,
+    error_message: Option<&str>,
+    progress: (&str, i32, i32, i32),
+    now: chrono::DateTime<Utc>,
+) -> map_job::ActiveModel {
+    let (current_step, progress_percent, segments_done, segments_total) = progress;
+    map_job::ActiveModel {
+        id: Set(id.to_owned()),
+        kind: Set("world-to-6".to_owned()),
+        status: Set(status.to_owned()),
+        build_key: Set("20260421.pmtiles".to_owned()),
+        chunk_id: Set(Some("world-to-6".to_owned())),
+        archive_id: Set(None),
+        error_message: Set(error_message.map(str::to_owned)),
+        current_step: Set(current_step.to_owned()),
+        progress_percent: Set(progress_percent),
+        segments_done: Set(segments_done),
+        segments_total: Set(segments_total),
+        created_at: Set(now),
+        updated_at: Set(now),
+        started_at: Set(Some(now)),
+        finished_at: Set(Some(now)),
+    }
+}
+
 #[tokio::test]
 async fn caches_build_catalog_after_the_upstream_source_goes_away() {
     let temp_dir = TempDir::new().expect("temp dir should be created");
+    let postgres = TestPostgres::start().await;
     let build_path = temp_dir.path().join("catalog-source.pmtiles");
     let build_bytes = create_source_pmtiles(&build_path, b"region-a", b"coarse-a");
     let (base_url, shutdown_tx, handle) = spawn_mock_server(vec![MockBuild {
@@ -325,7 +358,7 @@ async fn caches_build_catalog_after_the_upstream_source_goes_away() {
     .await;
 
     let context = Arc::new(
-        AppContext::bootstrap(app_config(&temp_dir, &base_url))
+        AppContext::bootstrap(app_config(&temp_dir, &base_url, postgres.database_url()))
             .await
             .expect("bootstrap should succeed"),
     );
@@ -376,6 +409,7 @@ async fn caches_build_catalog_after_the_upstream_source_goes_away() {
 #[tokio::test]
 async fn materializes_world_and_area_chunks_then_rebuilds_them_for_a_new_selected_build() {
     let temp_dir = TempDir::new().expect("temp dir should be created");
+    let postgres = TestPostgres::start().await;
     let build_a_path = temp_dir.path().join("20260420.pmtiles");
     let build_b_path = temp_dir.path().join("20260421.pmtiles");
     let build_a = create_source_pmtiles(&build_a_path, b"region-a", b"coarse-a");
@@ -394,7 +428,7 @@ async fn materializes_world_and_area_chunks_then_rebuilds_them_for_a_new_selecte
     .await;
 
     let context = Arc::new(
-        AppContext::bootstrap(app_config(&temp_dir, &base_url))
+        AppContext::bootstrap(app_config(&temp_dir, &base_url, postgres.database_url()))
             .await
             .expect("bootstrap should succeed"),
     );
@@ -792,6 +826,7 @@ async fn materializes_world_and_area_chunks_then_rebuilds_them_for_a_new_selecte
 #[tokio::test]
 async fn cancels_running_world_job_and_rejects_duplicate_world_requests() {
     let temp_dir = TempDir::new().expect("temp dir should be created");
+    let postgres = TestPostgres::start().await;
     let build_path = temp_dir.path().join("20260421.pmtiles");
     let build_bytes = create_source_pmtiles(&build_path, b"region-a", b"coarse-a");
 
@@ -805,7 +840,7 @@ async fn cancels_running_world_job_and_rejects_duplicate_world_requests() {
     .await;
 
     let context = Arc::new(
-        AppContext::bootstrap(app_config(&temp_dir, &base_url))
+        AppContext::bootstrap(app_config(&temp_dir, &base_url, postgres.database_url()))
             .await
             .expect("bootstrap should succeed"),
     );
@@ -893,6 +928,7 @@ async fn cancels_running_world_job_and_rejects_duplicate_world_requests() {
 #[tokio::test]
 async fn keeps_failed_and_cancelled_jobs_visible_while_hiding_completed_jobs() {
     let temp_dir = TempDir::new().expect("temp dir should be created");
+    let postgres = TestPostgres::start().await;
     let build_path = temp_dir.path().join("20260421.pmtiles");
     let build_bytes = create_source_pmtiles(&build_path, b"region-a", b"coarse-a");
 
@@ -903,29 +939,61 @@ async fn keeps_failed_and_cancelled_jobs_visible_while_hiding_completed_jobs() {
     .await;
 
     let context = Arc::new(
-        AppContext::bootstrap(app_config(&temp_dir, &base_url))
+        AppContext::bootstrap(app_config(&temp_dir, &base_url, postgres.database_url()))
             .await
             .expect("bootstrap should succeed"),
     );
-    let now = Utc::now().to_rfc3339();
-    let insert_sql = format!(
-        "INSERT INTO map_chunk_defs \
-         (id, label, kind, min_lon, min_lat, max_lon, max_lat, max_zoom, enabled, display_order, created_at, updated_at) \
-         VALUES \
-         ('world-to-6', 'World to 6', 'world', -180, -85, 180, 85, 6, 1, 1000, '{now}', '{now}'); \
-         INSERT INTO map_jobs \
-         (id, kind, status, build_key, chunk_id, archive_id, error_message, current_step, progress_percent, segments_done, segments_total, created_at, updated_at, started_at, finished_at) \
-         VALUES \
-         ('completed-job', 'world-to-6', 'completed', '20260421.pmtiles', 'world-to-6', NULL, NULL, 'Completed', 100, 1, 1, '{now}', '{now}', '{now}', '{now}'), \
-         ('failed-job', 'world-to-6', 'failed', '20260421.pmtiles', 'world-to-6', NULL, 'download failed', 'Failed', 50, 1, 2, '{now}', '{now}', '{now}', '{now}'), \
-         ('retryable-job', 'world-to-6', 'failed', '20260421.pmtiles', 'world-to-6', NULL, 'download failed', 'Failed', 50, 1, 2, '{now}', '{now}', '{now}', '{now}'), \
-         ('cancelled-job', 'world-to-6', 'cancelled', '20260421.pmtiles', 'world-to-6', NULL, NULL, 'Cancelled', 10, 0, 2, '{now}', '{now}', '{now}', '{now}')"
-    );
-    context
-        .db()
-        .execute_unprepared(&insert_sql)
-        .await
-        .expect("job insert should succeed");
+    let now = Utc::now();
+    map_chunk::ActiveModel {
+        id: Set("world-to-6".to_owned()),
+        label: Set("World to 6".to_owned()),
+        kind: Set("world".to_owned()),
+        min_lon: Set(Some(-180.0)),
+        min_lat: Set(Some(-85.0)),
+        max_lon: Set(Some(180.0)),
+        max_lat: Set(Some(85.0)),
+        max_zoom: Set(6),
+        enabled: Set(true),
+        display_order: Set(1000),
+        created_at: Set(now),
+        updated_at: Set(now),
+    }
+    .insert(context.db())
+    .await
+    .expect("chunk insert should succeed");
+    map_job::Entity::insert_many([
+        map_job_model(
+            "completed-job",
+            "completed",
+            None,
+            ("Completed", 100, 1, 1),
+            now,
+        ),
+        map_job_model(
+            "failed-job",
+            "failed",
+            Some("download failed"),
+            ("Failed", 50, 1, 2),
+            now,
+        ),
+        map_job_model(
+            "retryable-job",
+            "failed",
+            Some("download failed"),
+            ("Failed", 50, 1, 2),
+            now,
+        ),
+        map_job_model(
+            "cancelled-job",
+            "cancelled",
+            None,
+            ("Cancelled", 10, 0, 2),
+            now,
+        ),
+    ])
+    .exec(context.db())
+    .await
+    .expect("job insert should succeed");
     let router = build_router(context);
 
     let jobs_response = router
@@ -1040,6 +1108,7 @@ async fn keeps_failed_and_cancelled_jobs_visible_while_hiding_completed_jobs() {
 #[tokio::test]
 async fn reconciles_cancel_requested_jobs_after_restart() {
     let temp_dir = TempDir::new().expect("temp dir should be created");
+    let postgres = TestPostgres::start().await;
     let build_path = temp_dir.path().join("20260421.pmtiles");
     let build_bytes = create_source_pmtiles(&build_path, b"region-a", b"coarse-a");
 
@@ -1049,20 +1118,21 @@ async fn reconciles_cancel_requested_jobs_after_restart() {
     }])
     .await;
 
-    let config = app_config(&temp_dir, &base_url);
+    let config = app_config(&temp_dir, &base_url, postgres.database_url());
     let initial_context = AppContext::bootstrap(config.clone())
         .await
         .expect("bootstrap should succeed");
-    let now = Utc::now().to_rfc3339();
-    let insert_sql = format!(
-        "INSERT INTO map_jobs \
-         (id, kind, status, build_key, chunk_id, archive_id, error_message, current_step, progress_percent, segments_done, segments_total, created_at, updated_at, started_at, finished_at) \
-         VALUES \
-         ('orphaned-cancel-request', 'world-to-6', 'cancel_requested', '20260421.pmtiles', 'world-to-6', NULL, NULL, 'Cancellation requested', 7, 150, 5461, '{now}', '{now}', '{now}', NULL)"
+    let now = Utc::now();
+    let mut orphaned_job = map_job_model(
+        "orphaned-cancel-request",
+        "cancel_requested",
+        None,
+        ("Cancellation requested", 7, 150, 5461),
+        now,
     );
-    initial_context
-        .db()
-        .execute_unprepared(&insert_sql)
+    orphaned_job.finished_at = Set(None);
+    orphaned_job
+        .insert(initial_context.db())
         .await
         .expect("job insert should succeed");
     drop(initial_context);
@@ -1112,6 +1182,7 @@ async fn reconciles_cancel_requested_jobs_after_restart() {
 #[tokio::test]
 async fn rejects_duplicate_area_extract_jobs_without_creating_extra_chunks() {
     let temp_dir = TempDir::new().expect("temp dir should be created");
+    let postgres = TestPostgres::start().await;
     let build_path = temp_dir.path().join("20260421.pmtiles");
     let build_bytes = create_source_pmtiles(&build_path, b"region-a", b"coarse-a");
 
@@ -1122,7 +1193,7 @@ async fn rejects_duplicate_area_extract_jobs_without_creating_extra_chunks() {
     .await;
 
     let context = Arc::new(
-        AppContext::bootstrap(app_config(&temp_dir, &base_url))
+        AppContext::bootstrap(app_config(&temp_dir, &base_url, postgres.database_url()))
             .await
             .expect("bootstrap should succeed"),
     );

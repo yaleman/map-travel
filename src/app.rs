@@ -1,10 +1,10 @@
-use std::{net::SocketAddr, path::PathBuf, sync::Arc};
+use std::{net::SocketAddr, path::PathBuf, sync::Arc, time::Duration};
 
 use migration::MigratorTrait;
 use pmtiles::{AsyncPmTilesReader, MmapBackend};
 use sea_orm::{
-    ActiveModelTrait, ActiveValue::Set, ColumnTrait, ConnectOptions, Database, DatabaseConnection,
-    EntityTrait, QueryFilter,
+    ActiveValue::Set, ColumnTrait, ConnectOptions, Database, DatabaseConnection, EntityTrait,
+    QueryFilter, sea_query::OnConflict,
 };
 use uuid::Uuid;
 
@@ -17,6 +17,8 @@ use crate::{
 #[derive(Clone, Debug)]
 pub struct AppConfig {
     pub database_url: String,
+    pub database_max_connections: u32,
+    pub database_connect_timeout: Duration,
     pub listen_addr: SocketAddr,
     pub pmtiles_path: Option<PathBuf>,
     pub pmtiles_style_path: Option<PathBuf>,
@@ -27,9 +29,11 @@ pub struct AppConfig {
 }
 
 impl AppConfig {
-    pub fn for_tests() -> Self {
+    pub fn for_tests(database_url: impl Into<String>, managed_maps_dir: PathBuf) -> Self {
         Self {
-            database_url: "sqlite::memory:".to_owned(),
+            database_url: database_url.into(),
+            database_max_connections: 4,
+            database_connect_timeout: Duration::from_secs(10),
             #[allow(clippy::expect_used)]
             listen_addr: "127.0.0.1:0"
                 .parse()
@@ -37,7 +41,7 @@ impl AppConfig {
             pmtiles_path: None,
             pmtiles_style_path: None,
             vendored_basemap_dir: PathBuf::from("vendor/protomaps"),
-            managed_maps_dir: Some(std::env::temp_dir().join("map-travel-managed-maps-tests")),
+            managed_maps_dir: Some(managed_maps_dir),
             protomaps_builds_metadata_url: "https://build-metadata.protomaps.dev/builds.json"
                 .to_owned(),
             protomaps_builds_base_url: "https://build.protomaps.com".to_owned(),
@@ -58,7 +62,8 @@ impl AppContext {
     pub async fn bootstrap(config: AppConfig) -> AppResult<Self> {
         let mut options = ConnectOptions::new(config.database_url.clone());
         options.sqlx_logging(false);
-        options.max_connections(1);
+        options.max_connections(config.database_max_connections);
+        options.connect_timeout(config.database_connect_timeout);
 
         let db = Database::connect(options).await?;
         migration::Migrator::up(&db, None)
@@ -137,11 +142,16 @@ async fn ensure_owner_id(db: &DatabaseConnection) -> AppResult<String> {
     }
 
     let owner_id = Uuid::new_v4().to_string();
-    metadata::ActiveModel {
+    metadata::Entity::insert(metadata::ActiveModel {
         key: Set("owner_id".to_owned()),
-        value: Set(owner_id.clone()),
-    }
-    .insert(db)
+        value: Set(owner_id),
+    })
+    .on_conflict(
+        OnConflict::column(metadata::Column::Key)
+            .do_nothing()
+            .to_owned(),
+    )
+    .exec_without_returning(db)
     .await?;
 
     let saved = metadata::Entity::find()
