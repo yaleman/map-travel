@@ -11,7 +11,7 @@
   },
   "type": "module",
   "dependencies": {
-    "maplibre-gl": "^5.23.0"
+    "maplibre-gl": "^6.4.1"
   },
   "devDependencies": {
     "@playwright/test": "^1.59.1",
