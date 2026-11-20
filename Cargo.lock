@@ -2803,9 +2803,9 @@ dependencies = [
 
 [[package]]
 name = "pmtiles"
-version = "0.28.0"
+version = "0.28.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7a242b695fabc0870d663c3883e78ead4f888134c0e83fbf00fcc35d60005015"
+checksum = "61219486719a766150c032f14204184ebcb97e83e79e4be124bc13d2fca29b14"
 dependencies = [
  "bytes",
  "fast_hilbert",
